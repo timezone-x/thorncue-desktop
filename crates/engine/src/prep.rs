@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use kira::sound::static_sound::StaticSoundData;
 
+use crate::edit::{EditKey, apply};
+
 /// Decodes one file. The default uses kira (symphonia); tests swap in a gated one.
 pub type Loader = Arc<dyn Fn(&Path) -> Result<StaticSoundData, String> + Send + Sync>;
 
@@ -18,6 +20,14 @@ pub(crate) struct Job {
     pub generation: u64,
     pub asset: usize,
     pub path: PathBuf,
+    /// Every edit of this file the show's cues play.
+    pub edits: Vec<EditKey>,
+}
+
+/// A decoded file and each edit of it. An edit maps to `None` when it leaves nothing.
+pub(crate) struct Decoded {
+    pub raw: StaticSoundData,
+    pub edits: Vec<(EditKey, Option<StaticSoundData>)>,
 }
 
 pub(crate) enum PrepMsg {
@@ -28,7 +38,7 @@ pub(crate) enum PrepMsg {
     Finished {
         generation: u64,
         asset: usize,
-        result: Box<Result<StaticSoundData, String>>,
+        result: Box<Result<Decoded, String>>,
     },
 }
 
@@ -64,7 +74,14 @@ impl PrepPool {
                             });
                             let t = std::time::Instant::now();
                             let result = if job.path.is_file() {
-                                loader(&job.path)
+                                loader(&job.path).map(|raw| {
+                                    let edits = job
+                                        .edits
+                                        .iter()
+                                        .map(|k| (k.clone(), apply(&raw, k)))
+                                        .collect();
+                                    Decoded { raw, edits }
+                                })
                             } else {
                                 Err(MISSING.into())
                             };

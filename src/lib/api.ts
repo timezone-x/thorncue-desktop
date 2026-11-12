@@ -7,6 +7,8 @@ export type ThemeMode = "dark" | "light" | "system";
 export interface Settings {
   theme_family: ThemeFamily;
   theme_mode: ThemeMode;
+  go_lockout_ms: number;
+  stop_fade: number;
 }
 
 export interface ShowSummary {
@@ -83,6 +85,8 @@ export function errorText(e: unknown): string {
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setTheme: (family: ThemeFamily, mode: ThemeMode) => invoke<Settings>("set_theme", { family, mode }),
+  setAudioOptions: (goLockoutMs: number, stopFade: number) =>
+    invoke<Settings>("set_audio_options", { goLockoutMs, stopFade }),
   appReady: () => invoke<void>("app_ready"),
   listShows: () => invoke<ShowSummary[]>("list_shows"),
   importFile: (path: string) => invoke<ImportResult>("import_file", { path }),
@@ -117,6 +121,7 @@ export interface EngineSnapshot {
   prep_done: number;
   prep_total: number;
   decoded_bytes: number;
+  master: number;
 }
 
 export interface Position {
@@ -125,6 +130,7 @@ export interface Position {
   elapsed: number;
   remaining: number | null;
   length: number;
+  control: boolean;
 }
 
 export interface Notice {
@@ -142,4 +148,5 @@ export const transport = {
   moveStandby: (delta: number) => invoke<void>("move_standby", { delta }),
   jump: (number: number) => invoke<void>("jump", { number }),
   restart: () => invoke<void>("restart_engine"),
+  setMaster: (volume: number) => invoke<void>("set_master", { volume }),
 };

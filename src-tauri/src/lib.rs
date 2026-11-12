@@ -43,10 +43,14 @@ pub fn run() {
             let settings_path = settings::settings_path(&config_dir);
             let settings = Settings::load(&settings_path);
             let init = settings::theme_init_script(&settings);
+            let settings = settings.sanitised();
             let library = Library::new(&data_dir)?;
             tracing::info!("library at {}", library.root().display());
             let open_dir = playback::OpenShowDir::default();
             let engine = playback::start_engine(app.handle().clone(), open_dir.clone());
+            if let Err(e) = engine.send(engine::Command::SetOptions(settings.engine_options())) {
+                tracing::error!("sending options to the engine: {e}");
+            }
             app.manage(AppState {
                 settings_path,
                 settings: Mutex::new(settings),
@@ -89,6 +93,8 @@ pub fn run() {
             commands::move_standby,
             commands::jump,
             commands::restart_engine,
+            commands::set_master,
+            commands::set_audio_options,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ThornCue");

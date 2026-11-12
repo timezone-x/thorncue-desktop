@@ -9,12 +9,18 @@ use crate::fsutil::atomic_write;
 
 pub const FAMILIES: [&str; 4] = ["graphite", "ghost-light", "booth", "thorn"];
 pub const MODES: [&str; 3] = ["dark", "light", "system"];
+pub const MAX_GO_LOCKOUT_MS: u64 = 2000;
+pub const MAX_STOP_FADE: f64 = 10.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     pub theme_family: String,
     pub theme_mode: String,
+    /// Ignore a GO within this many milliseconds of the last (0 = off).
+    pub go_lockout_ms: u64,
+    /// Stop all fades over this many seconds (0 = instant).
+    pub stop_fade: f64,
     /// Fields written by a newer ThornCue are kept on save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -25,12 +31,21 @@ impl Default for Settings {
         Self {
             theme_family: "graphite".into(),
             theme_mode: "dark".into(),
+            go_lockout_ms: 0,
+            stop_fade: 0.0,
             extra: Default::default(),
         }
     }
 }
 
 impl Settings {
+    pub fn engine_options(&self) -> engine::Options {
+        engine::Options {
+            go_lockout_ms: self.go_lockout_ms,
+            stop_fade: self.stop_fade,
+        }
+    }
+
     /// Never fails: a missing or damaged file gives the defaults (and is logged).
     pub fn load(path: &Path) -> Self {
         let mut s: Settings = match std::fs::read(path) {
@@ -48,6 +63,11 @@ impl Settings {
         s
     }
 
+    pub fn sanitised(mut self) -> Self {
+        self.sanitise();
+        self
+    }
+
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         let bytes = serde_json::to_vec_pretty(self)?;
         atomic_write(path, &bytes)
@@ -60,6 +80,11 @@ impl Settings {
         if !MODES.contains(&self.theme_mode.as_str()) {
             self.theme_mode = "dark".into();
         }
+        self.go_lockout_ms = self.go_lockout_ms.min(MAX_GO_LOCKOUT_MS);
+        if !self.stop_fade.is_finite() {
+            self.stop_fade = 0.0;
+        }
+        self.stop_fade = self.stop_fade.clamp(0.0, MAX_STOP_FADE);
     }
 }
 

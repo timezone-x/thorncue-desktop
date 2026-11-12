@@ -1,17 +1,24 @@
 //! The engine proper. `Core` is synchronous: the engine thread (`thread.rs`) feeds it commands,
 //! prep results and ticks; tests drive it directly with a `TestBackend`.
+//!
+//! Playback rules are FORMAT.md 2.5. Timing lives on two kira clocks:
+//! - the *show clock* starts sounds (pre-wait) and times silence and fade-out cues; it is
+//!   paused together with the show track, so Pause freezes everything;
+//! - the *heartbeat* never pauses and only moves while the device pulls audio.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use kira::clock::{ClockHandle, ClockSpeed};
+use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
 use kira::sound::PlaybackState;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, Decibels, StartTime, Tween};
 
 use crate::backend::EngineBackend;
+use crate::edit::EditKey;
+use crate::gain::{CueGainBuilder, CueGainHandle, GainPhase};
 use crate::plan::{CueKind, ShowPlan};
 use crate::prep::{Job, Loader, MISSING, PrepMsg, PrepPool};
 use crate::state::{
@@ -37,6 +44,23 @@ pub enum Command {
     /// J: fire cue `index` now (standby moves past it).
     JumpAndPlay(usize),
     RestartAudio,
+    /// Master volume, linear amplitude 0..=1.
+    SetMaster(f64),
+    /// A cue's volume changed: takes effect at once if it is playing (as the web).
+    SetCueVolume {
+        index: usize,
+        volume: f64,
+    },
+    SetOptions(Options),
+}
+
+/// Operator settings that change how the transport behaves.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Options {
+    /// Ignore a GO within this many milliseconds of the last (0 = off). W6.
+    pub go_lockout_ms: u64,
+    /// Stop all fades over this many seconds (0 = instant, as the web). W7.
+    pub stop_fade: f64,
 }
 
 const INSTANT: Tween = Tween {
@@ -45,14 +69,10 @@ const INSTANT: Tween = Tween {
     easing: kira::Easing::Linear,
 };
 
-fn tween(seconds: f64) -> Tween {
-    Tween {
-        duration: Duration::from_secs_f64(seconds.max(0.0)),
-        ..INSTANT
-    }
-}
+/// Ticks per second of the show clock. Start times are rounded to this.
+const CLOCK_RATE: f64 = 1000.0;
 
-/// Linear amplitude (FORMAT.md volume) to kira decibels. kira treats -60 dB as silence.
+/// Linear amplitude to kira decibels (used for the master). kira treats -60 dB as silence.
 pub(crate) fn amplitude_to_db(a: f64) -> Decibels {
     if a <= 0.001 {
         Decibels::SILENCE
@@ -64,21 +84,36 @@ pub(crate) fn amplitude_to_db(a: f64) -> Decibels {
 struct Asset {
     path: PathBuf,
     state: PrepState,
-    data: Option<StaticSoundData>,
+    /// Edited audio for each edit of this file in the show (`None` = length 0).
+    edits: HashMap<EditKey, Option<StaticSoundData>>,
+    /// Bytes held in memory (decoded source plus rendered cuts).
+    bytes: u64,
 }
 
-struct Running {
-    index: usize,
-    id: String,
-    /// Each running cue has its own sub-track under the show track. Kept so the track
-    /// lives as long as the sound; dropping it removes the track.
-    _track: TrackHandle,
-    sound: StaticSoundHandle,
-    length: f64,
-    pre_wait: f64,
-    fade_out: f64,
-    /// TODO(M4): CueGain. M3 starts the fade-out with a kira tween from the tick.
-    fading_out: bool,
+// A handful of these exist at a time; boxing the big variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
+enum Running {
+    Audio {
+        index: usize,
+        /// The cue's own sub-track; kept so it lives as long as the sound.
+        track: TrackHandle,
+        sound: StaticSoundHandle,
+        gain: CueGainHandle,
+        length: f64,
+        looping: bool,
+        /// Stopped by Stop all, a silence or fade-out cue, or a re-GO: never continues.
+        stopped: bool,
+    },
+    /// Silence and fade-out cues, and audio cues of length 0 (after their pre-wait).
+    Timer { index: usize, start: u64, end: u64 },
+}
+
+impl Running {
+    fn index(&self) -> usize {
+        match self {
+            Running::Audio { index, .. } | Running::Timer { index, .. } => *index,
+        }
+    }
 }
 
 /// A GO on a cue whose audio is still decoding (W1).
@@ -90,6 +125,7 @@ pub struct Core<B: EngineBackend> {
     factory: ManagerFactory<B>,
     manager: Option<AudioManager<B>>,
     show_track: Option<TrackHandle>,
+    show_clock: Option<ClockHandle>,
     /// Ticks only while the device is pulling audio: if it stops, the output is dead.
     heartbeat: Option<ClockHandle>,
     /// Last tick count seen, when it changed, and whether it has moved since the output opened.
@@ -110,6 +146,9 @@ pub struct Core<B: EngineBackend> {
 
     standby: usize,
     paused: bool,
+    master: f64,
+    options: Options,
+    last_go: Option<Instant>,
     running: Vec<Running>,
     pending: Vec<PendingStart>,
     /// Sounds stopped by us, kept until kira reports them stopped.
@@ -138,6 +177,7 @@ impl<B: EngineBackend> Core<B> {
             factory,
             manager,
             show_track: None,
+            show_clock: None,
             heartbeat: None,
             last_beat: (0, Instant::now(), false),
             lost_by_stall: false,
@@ -151,6 +191,9 @@ impl<B: EngineBackend> Core<B> {
             prep: PrepPool::new(2, loader),
             standby: 0,
             paused: false,
+            master: 1.0,
+            options: Options::default(),
+            last_go: None,
             running: Vec::new(),
             pending: Vec::new(),
             stopping: Vec::new(),
@@ -159,31 +202,45 @@ impl<B: EngineBackend> Core<B> {
             dirty: true,
             last_positions: Instant::now(),
         };
-        core.make_show_track();
+        core.build_mix();
         core
     }
 
-    fn make_show_track(&mut self) {
+    /// The show track, show clock and heartbeat on the current manager.
+    fn build_mix(&mut self) {
         self.show_track = None;
+        self.show_clock = None;
         self.heartbeat = None;
         self.last_beat = (0, Instant::now(), false);
         self.lost_by_stall = false;
         self.recovering_since = None;
-        if let Some(m) = &mut self.manager {
-            match m.add_clock(ClockSpeed::TicksPerSecond(1000.0)) {
-                Ok(mut c) => {
-                    c.start();
-                    self.heartbeat = Some(c);
-                }
-                Err(e) => tracing::warn!("no heartbeat clock: {e}"),
+        let master = amplitude_to_db(self.master);
+        let Some(m) = &mut self.manager else { return };
+        match m.add_clock(ClockSpeed::TicksPerSecond(1000.0)) {
+            Ok(mut c) => {
+                c.start();
+                self.heartbeat = Some(c);
             }
-            match m.add_sub_track(TrackBuilder::new().sub_track_capacity(64)) {
-                Ok(t) => self.show_track = Some(t),
-                Err(e) => {
-                    tracing::error!("couldn't create the show track: {e}");
-                    self.status = EngineStatus::NoOutput;
-                    self.status_message = Some(no_output_message());
-                }
+            Err(e) => tracing::warn!("no heartbeat clock: {e}"),
+        }
+        let built = m
+            .add_clock(ClockSpeed::TicksPerSecond(CLOCK_RATE))
+            .map_err(|e| e.to_string())
+            .and_then(|clock| {
+                m.add_sub_track(TrackBuilder::new().sub_track_capacity(64).volume(master))
+                    .map(|t| (clock, t))
+                    .map_err(|e| e.to_string())
+            });
+        match built {
+            Ok((mut clock, track)) => {
+                clock.start();
+                self.show_clock = Some(clock);
+                self.show_track = Some(track);
+            }
+            Err(e) => {
+                tracing::error!("couldn't create the show track: {e}");
+                self.status = EngineStatus::NoOutput;
+                self.status_message = Some(no_output_message());
             }
         }
     }
@@ -213,6 +270,15 @@ impl<B: EngineBackend> Core<B> {
         format!("Q{} \"{name}\"", index + 1)
     }
 
+    fn clock_now(&self) -> Option<ClockTime> {
+        self.show_clock.as_ref().map(|c| c.time())
+    }
+
+    fn edit_key(&self, i: usize) -> EditKey {
+        let c = &self.plan.cues[i];
+        EditKey::new(c.trim_start, c.trim_end, &c.cuts)
+    }
+
     // -----------------------------------------------------------------------
     // Commands
     // -----------------------------------------------------------------------
@@ -223,12 +289,11 @@ impl<B: EngineBackend> Core<B> {
             Command::Go => self.go(),
             Command::StopAll { panic } => self.stop_all(panic),
             Command::TogglePause => self.toggle_pause(),
-            Command::SetStandby(i) => self.set_standby(i),
+            Command::SetStandby(i) => self.standby = i.min(self.plan.cues.len()),
             Command::MoveStandby(d) => {
                 if !self.plan.cues.is_empty() {
                     let last = self.plan.cues.len() as i64 - 1;
-                    let to = (self.standby as i64 + d as i64).clamp(0, last);
-                    self.set_standby(to as usize);
+                    self.standby = (self.standby as i64 + d as i64).clamp(0, last) as usize;
                 }
             }
             Command::JumpAndPlay(i) => {
@@ -247,16 +312,46 @@ impl<B: EngineBackend> Core<B> {
                 }
             }
             Command::RestartAudio => self.restart(),
+            Command::SetMaster(v) => {
+                self.master = v.clamp(0.0, 1.0);
+                if let Some(t) = &mut self.show_track {
+                    // A short ramp so dragging the slider doesn't click.
+                    t.set_volume(
+                        amplitude_to_db(self.master),
+                        Tween {
+                            duration: Duration::from_millis(20),
+                            ..INSTANT
+                        },
+                    );
+                }
+            }
+            Command::SetCueVolume { index, volume } => {
+                let volume = volume.clamp(0.0, 2.0);
+                if let Some(c) = self.plan.cues.get_mut(index) {
+                    c.volume = volume;
+                    for r in &self.running {
+                        // Not while it is being stopped with a fade (as the web).
+                        if let Running::Audio {
+                            index: i,
+                            gain,
+                            stopped: false,
+                            ..
+                        } = r
+                            && *i == index
+                        {
+                            gain.set_volume(volume);
+                        }
+                    }
+                }
+            }
+            Command::SetOptions(o) => self.options = o,
         }
         self.dirty = true;
     }
 
     fn load_show(&mut self, plan: ShowPlan) {
         self.stop_everything_now();
-        self.paused = false;
-        if let Some(t) = &mut self.show_track {
-            t.resume(INSTANT);
-        }
+        self.set_paused(false);
         self.generation += 1;
         self.prep.set_generation(self.generation);
 
@@ -274,7 +369,8 @@ impl<B: EngineBackend> Core<B> {
                     self.assets.push(Asset {
                         path,
                         state: PrepState::Pending,
-                        data: None,
+                        edits: HashMap::new(),
+                        bytes: 0,
                     });
                     self.assets.len() - 1
                 }))
@@ -283,6 +379,16 @@ impl<B: EngineBackend> Core<B> {
         self.standby = plan.standby.min(plan.cues.len());
         self.plan = plan;
 
+        // Every edit each file needs.
+        let mut edits: Vec<Vec<EditKey>> = vec![Vec::new(); self.assets.len()];
+        for i in 0..self.plan.cues.len() {
+            if let Some(a) = self.cue_asset[i] {
+                let k = self.edit_key(i);
+                if !edits[a].contains(&k) {
+                    edits[a].push(k);
+                }
+            }
+        }
         // Standby cue first, then outward in show order.
         let mut order: Vec<usize> = (0..self.plan.cues.len()).collect();
         let s = self.standby as i64;
@@ -300,12 +406,23 @@ impl<B: EngineBackend> Core<B> {
                     generation: self.generation,
                     asset: a,
                     path: self.assets[a].path.clone(),
+                    edits: std::mem::take(&mut edits[a]),
                 });
             }
         }
     }
 
     fn go(&mut self) {
+        if let Some(t) = self.last_go
+            && self.options.go_lockout_ms > 0
+            && t.elapsed() < Duration::from_millis(self.options.go_lockout_ms)
+        {
+            tracing::debug!(
+                "GO ignored: within the {} ms lockout",
+                self.options.go_lockout_ms
+            );
+            return;
+        }
         if self.plan.cues.is_empty() {
             self.notice("There are no cues to play.", true);
             return;
@@ -317,6 +434,7 @@ impl<B: EngineBackend> Core<B> {
             );
             return;
         }
+        self.last_go = Some(Instant::now());
         self.fire(self.standby);
     }
 
@@ -324,15 +442,46 @@ impl<B: EngineBackend> Core<B> {
     fn fire(&mut self, i: usize) {
         let t = Instant::now();
         self.standby = i + 1;
-        let cue = &self.plan.cues[i];
-        match cue.kind {
+        // GO on a cue that is already playing (or waiting) restarts it (FORMAT.md 2.5.6).
+        self.stop_cue(i);
+        self.pending.retain(|p| p.index != i);
+        match self.plan.cues[i].kind {
             CueKind::Audio => self.start_audio(i),
-            // TODO(M4): silence and fade-out cues on the engine clock.
-            CueKind::Silence | CueKind::Fadeout => {
-                tracing::debug!("cue {i} is a {:?} cue; not played until M4", cue.kind);
+            CueKind::Silence => {
+                // Stops every running cue immediately (no fade), then counts `duration`.
+                // Like Stop all on the web, it also un-pauses.
+                self.stop_everything_now();
+                self.set_paused(false);
+                let d = self.plan.cues[i].duration;
+                self.start_timer(i, d);
+            }
+            CueKind::Fadeout => {
+                // Every running audio cue fades from its current level to 0 over `duration`,
+                // then stops. Cues stopped this way don't continue.
+                let d = self.plan.cues[i].duration;
+                for r in &mut self.running {
+                    if let Running::Audio { gain, stopped, .. } = r
+                        && !*stopped
+                    {
+                        gain.stop_with_fade(d);
+                        *stopped = true;
+                    }
+                }
+                self.start_timer(i, d);
             }
         }
+        self.dirty = true;
         tracing::debug!("GO on cue {} handled in {:?}", i + 1, t.elapsed());
+    }
+
+    fn start_timer(&mut self, i: usize, seconds: f64) {
+        let now = self.clock_now().map(|t| t.ticks).unwrap_or(0);
+        let end = now + (seconds * CLOCK_RATE).round() as u64;
+        self.running.push(Running::Timer {
+            index: i,
+            start: now,
+            end,
+        });
     }
 
     fn start_audio(&mut self, i: usize) {
@@ -341,9 +490,6 @@ impl<B: EngineBackend> Core<B> {
             self.notice(format!("{q} can't play: it has no audio file."), true);
             return;
         };
-        // GO on a cue that is already playing (or waiting) restarts it (FORMAT.md 2.5.6).
-        self.stop_cue(i);
-        self.pending.retain(|p| p.index != i);
         match &self.assets[a].state {
             PrepState::Ready => self.play_now(i),
             PrepState::Pending | PrepState::Decoding => {
@@ -366,10 +512,22 @@ impl<B: EngineBackend> Core<B> {
 
     fn play_now(&mut self, i: usize) {
         let Some(a) = self.cue_asset[i] else { return };
-        let Some(data) = self.assets[a].data.clone() else {
+        let key = self.edit_key(i);
+        let Some(edited) = self.assets[a].edits.get(&key).cloned() else {
+            tracing::error!("cue {i}: edit not prepared");
             return;
         };
-        let Some(show) = self.show_track.as_mut() else {
+        let cue = self.plan.cues[i].clone();
+        let Some(mut data) = edited else {
+            // Cuts remove everything: length 0. It ends at once (after its pre-wait) and
+            // continues (FORMAT.md 2.5 "Edited audio").
+            self.start_timer(i, cue.pre_wait);
+            return;
+        };
+        let (Some(show), Some(now)) = (
+            self.show_track.as_mut(),
+            self.show_clock.as_ref().map(|c| c.time()),
+        ) else {
             let q = self.q(i);
             self.notice(
                 format!("{q} can't play: there is no audio output. Press Restart audio engine."),
@@ -377,19 +535,27 @@ impl<B: EngineBackend> Core<B> {
             );
             return;
         };
-        let cue = &self.plan.cues[i];
         let length = data.duration().as_secs_f64();
-        let mut data = data.volume(amplitude_to_db(cue.volume));
-        if cue.fade_in > 0.0 {
-            // TODO(M4): CueGain (kira tweens are linear in dB, FORMAT.md wants amplitude).
-            data = data.fade_in_tween(tween(cue.fade_in));
+        // Sound and gain start at the same show-clock time, so the envelope lines up with the
+        // first sample; the clock pauses with the show track, so Pause freezes pre-waits.
+        let start = ClockTime {
+            ticks: now.ticks + (cue.pre_wait * CLOCK_RATE).round() as u64,
+            ..now
+        };
+        data.settings.start_time = StartTime::ClockTime(start);
+        if cue.looping {
+            data = data.loop_region(..);
         }
-        if cue.pre_wait > 0.0 {
-            // Counts down only while the show track is advancing, so Pause freezes it.
-            // Quantised to kira's 128-frame blocks (agreed tolerance).
-            data.settings.start_time = StartTime::Delayed(Duration::from_secs_f64(cue.pre_wait));
-        }
-        let mut track = match show.add_sub_track(TrackBuilder::new().sound_capacity(2)) {
+        let mut builder = TrackBuilder::new().sound_capacity(2);
+        let gain = builder.add_effect(CueGainBuilder {
+            volume: cue.volume,
+            fade_in: cue.fade_in,
+            fade_out: cue.fade_out,
+            length,
+            looping: cue.looping,
+            start: Some(start),
+        });
+        let mut track = match show.add_sub_track(builder) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("no free track for cue {i}: {e}");
@@ -413,75 +579,120 @@ impl<B: EngineBackend> Core<B> {
                 return;
             }
         };
-        self.running.push(Running {
+        self.running.push(Running::Audio {
             index: i,
-            id: cue.id.clone(),
-            _track: track,
+            track,
             sound,
+            gain,
             length,
-            pre_wait: cue.pre_wait,
-            fade_out: if cue.looping { 0.0 } else { cue.fade_out },
-            fading_out: false,
+            looping: cue.looping,
+            stopped: false,
         });
     }
 
+    /// Stop one cue at once (re-GO). It doesn't continue.
     fn stop_cue(&mut self, i: usize) {
         let mut k = 0;
         while k < self.running.len() {
-            if self.running[k].index == i {
-                let mut r = self.running.remove(k);
-                r.sound.stop(INSTANT);
-                self.stopping.push((r._track, r.sound));
+            if self.running[k].index() == i {
+                let r = self.running.remove(k);
+                self.retire(r);
             } else {
                 k += 1;
             }
         }
     }
 
-    /// Stop all always wins (CLAUDE.md rule 3): every running cue, every pending start.
-    fn stop_all(&mut self, _panic: bool) {
-        // TODO(M4): Stop-all fade setting; `panic` will skip it.
-        self.stop_everything_now();
-        // As the web: Stop all also un-pauses, so the next GO is heard.
-        if self.paused {
-            self.paused = false;
-            if let Some(t) = &mut self.show_track {
-                t.resume(INSTANT);
-            }
+    /// Take a running entry out of play at once.
+    fn retire(&mut self, r: Running) {
+        if let Running::Audio {
+            track, mut sound, ..
+        } = r
+        {
+            sound.stop(INSTANT);
+            self.stopping.push((track, sound));
         }
+    }
+
+    /// Stop all always wins (CLAUDE.md rule 3): every running cue, every pending start, every
+    /// silence/fade-out timer. With a stop fade set (and not a panic), audio fades out.
+    fn stop_all(&mut self, panic: bool) {
+        let fade = if panic { 0.0 } else { self.options.stop_fade };
+        if fade > 0.0 {
+            self.pending.clear();
+            for r in std::mem::take(&mut self.running) {
+                match r {
+                    Running::Audio {
+                        index,
+                        track,
+                        sound,
+                        gain,
+                        length,
+                        looping,
+                        ..
+                    } => {
+                        // A cue already fading (fade-out cue) keeps its own fade.
+                        gain.stop_with_fade(fade);
+                        self.running.push(Running::Audio {
+                            index,
+                            track,
+                            sound,
+                            gain,
+                            length,
+                            looping,
+                            stopped: true,
+                        });
+                    }
+                    timer @ Running::Timer { .. } => self.retire(timer),
+                }
+            }
+        } else {
+            self.stop_everything_now();
+        }
+        // As the web: Stop all also un-pauses, so the next GO is heard.
+        self.set_paused(false);
     }
 
     fn stop_everything_now(&mut self) {
         self.pending.clear();
-        for mut r in self.running.drain(..) {
-            r.sound.stop(INSTANT);
-            self.stopping.push((r._track, r.sound));
+        for r in std::mem::take(&mut self.running) {
+            self.retire(r);
+        }
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        if self.paused == paused {
+            return;
+        }
+        self.paused = paused;
+        // Pausing the show track stops it processing its child tracks (kira track/sub.rs
+        // returns before processing sub-tracks), so every cue, fade and pre-wait freezes;
+        // the show clock pauses with it, so silence and fade-out timers freeze too.
+        // Both commands are read at the same block. Covered by tests.
+        if let Some(t) = &mut self.show_track {
+            if paused {
+                t.pause(INSTANT)
+            } else {
+                t.resume(INSTANT)
+            }
+        }
+        if let Some(c) = &mut self.show_clock {
+            if paused { c.pause() } else { c.start() }
         }
     }
 
     fn toggle_pause(&mut self) {
-        let Some(t) = &mut self.show_track else {
-            return;
-        };
-        // Pausing the parent track stops it processing its child tracks, so every cue,
-        // fade and pre-wait freezes together (kira track/sub.rs: a paused track returns
-        // before processing sub-tracks). Covered by a test.
-        if self.paused {
-            t.resume(INSTANT);
-        } else {
-            t.pause(INSTANT);
+        if self.show_track.is_some() {
+            self.set_paused(!self.paused);
         }
-        self.paused = !self.paused;
-    }
-
-    fn set_standby(&mut self, i: usize) {
-        self.standby = i.min(self.plan.cues.len());
     }
 
     fn restart(&mut self) {
         self.stop_everything_now();
         self.stopping.clear();
         self.show_track = None;
+        self.show_clock = None;
+        self.heartbeat = None;
         self.paused = false;
         self.manager = None;
         let t = Instant::now();
@@ -490,7 +701,7 @@ impl<B: EngineBackend> Core<B> {
                 self.manager = Some(m);
                 self.status = EngineStatus::Ok;
                 self.status_message = None;
-                self.make_show_track();
+                self.build_mix();
                 tracing::info!("audio engine restarted in {:?}", t.elapsed());
                 self.notice("Audio engine restarted.", false);
             }
@@ -527,9 +738,20 @@ impl<B: EngineBackend> Core<B> {
                 }
                 self.dirty = true;
                 match *result {
-                    Ok(data) => {
-                        self.assets[asset].state = PrepState::Ready;
-                        self.assets[asset].data = Some(data);
+                    Ok(decoded) => {
+                        let frame = std::mem::size_of::<kira::Frame>() as u64;
+                        let mut bytes = decoded.raw.frames.len() as u64 * frame;
+                        for (_, d) in &decoded.edits {
+                            if let Some(d) = d
+                                && !std::sync::Arc::ptr_eq(&d.frames, &decoded.raw.frames)
+                            {
+                                bytes += d.frames.len() as u64 * frame;
+                            }
+                        }
+                        let a = &mut self.assets[asset];
+                        a.state = PrepState::Ready;
+                        a.edits = decoded.edits.into_iter().collect();
+                        a.bytes = bytes;
                     }
                     Err(e) if e == MISSING => self.assets[asset].state = PrepState::Missing,
                     Err(e) => {
@@ -564,8 +786,8 @@ impl<B: EngineBackend> Core<B> {
         n
     }
 
-    /// Bookkeeping: retire finished sounds, start scheduled fade-outs, watch the device,
-    /// and publish state and positions.
+    /// Bookkeeping: retire finished cues and fire their continues, watch the device, and
+    /// publish state and positions.
     pub fn tick(&mut self) {
         // Device trouble: an error the backend recognises, or the audio clock standing still.
         if let Some(err) = self.backend_mut().and_then(|b| b.take_device_error()) {
@@ -581,30 +803,9 @@ impl<B: EngineBackend> Core<B> {
             );
         }
         self.check_heartbeat();
-
-        // Finished sounds.
-        let before = self.running.len();
-        self.running
-            .retain(|r| r.sound.state() != PlaybackState::Stopped);
-        if self.running.len() != before {
-            // TODO(M4): continue: after_end fires here for cues that ended by themselves.
-            self.dirty = true;
-        }
+        self.retire_finished();
         self.stopping
             .retain(|(_, s)| s.state() != PlaybackState::Stopped);
-
-        // Scheduled fade-outs (M3: kira tween from here; M4 moves this into CueGain).
-        if !self.paused {
-            for r in &mut self.running {
-                if r.fade_out > 0.0 && !r.fading_out {
-                    let pos = r.sound.position();
-                    if pos >= (r.length - r.fade_out).max(0.0) && pos > 0.0 {
-                        r.fading_out = true;
-                        r.sound.stop(tween((r.length - pos).max(0.0)));
-                    }
-                }
-            }
-        }
 
         if self.dirty {
             self.dirty = false;
@@ -616,6 +817,51 @@ impl<B: EngineBackend> Core<B> {
             self.last_positions = Instant::now();
             let p = self.positions();
             (self.out)(Event::Positions(p));
+        }
+    }
+
+    /// Cues that ended: remove them, and fire `continue: after_end` for those that ended by
+    /// themselves (never for stopped or looping cues).
+    fn retire_finished(&mut self) {
+        let now = self.clock_now().map(|t| t.ticks);
+        let mut continues = Vec::new();
+        let mut k = 0;
+        while k < self.running.len() {
+            let (done, natural) = match &self.running[k] {
+                Running::Audio {
+                    sound,
+                    gain,
+                    stopped,
+                    looping,
+                    ..
+                } => {
+                    if gain.phase() == GainPhase::Silent {
+                        (true, false)
+                    } else if sound.state() == PlaybackState::Stopped {
+                        (true, !*stopped && !*looping)
+                    } else {
+                        (false, false)
+                    }
+                }
+                Running::Timer { end, .. } => (now.is_some_and(|n| n >= *end), true),
+            };
+            if done {
+                let r = self.running.remove(k);
+                let i = r.index();
+                self.retire(r);
+                self.dirty = true;
+                if natural && self.plan.cues.get(i).is_some_and(|c| c.continue_after) {
+                    continues.push(i);
+                }
+            } else {
+                k += 1;
+            }
+        }
+        for i in continues {
+            if i + 1 < self.plan.cues.len() {
+                tracing::debug!("cue {} ended; continuing to {}", i + 1, i + 2);
+                self.fire(i + 1);
+            }
         }
     }
 
@@ -687,17 +933,38 @@ impl<B: EngineBackend> Core<B> {
     }
 
     pub fn positions(&self) -> Vec<Position> {
+        let now = self.clock_now().map(|t| t.ticks).unwrap_or(0);
         self.running
             .iter()
-            .map(|r| {
-                let elapsed = r.sound.position();
-                let looping = self.plan.cues.get(r.index).is_some_and(|c| c.looping);
-                Position {
-                    index: r.index,
-                    id: r.id.clone(),
-                    elapsed,
-                    remaining: (!looping).then(|| (r.length - elapsed).max(0.0)),
-                    length: r.length,
+            .map(|r| match r {
+                Running::Audio {
+                    index,
+                    gain,
+                    length,
+                    looping,
+                    ..
+                } => {
+                    let elapsed = gain.elapsed();
+                    Position {
+                        index: *index,
+                        id: self.plan.cues[*index].id.clone(),
+                        elapsed,
+                        remaining: (!looping).then(|| (length - elapsed).max(0.0)),
+                        length: *length,
+                        control: false,
+                    }
+                }
+                Running::Timer { index, start, end } => {
+                    let length = (end - start) as f64 / CLOCK_RATE;
+                    let elapsed = (now.saturating_sub(*start) as f64 / CLOCK_RATE).min(length);
+                    Position {
+                        index: *index,
+                        id: self.plan.cues[*index].id.clone(),
+                        elapsed,
+                        remaining: Some(length - elapsed),
+                        length,
+                        control: self.plan.cues[*index].kind != CueKind::Audio,
+                    }
                 }
             })
             .collect()
@@ -714,42 +981,49 @@ impl<B: EngineBackend> Core<B> {
             })
             .collect();
         running.extend(self.running.iter().map(|r| {
-            let waiting = r.pre_wait > 0.0
-                && r.sound.position() == 0.0
-                && r.sound.state() == PlaybackState::Playing;
-            RunningCue {
-                index: r.index,
-                id: r.id.clone(),
-                phase: if r.fading_out && r.sound.state() == PlaybackState::Stopping {
-                    RunPhase::Fading
-                } else if waiting {
-                    RunPhase::Waiting
-                } else {
-                    RunPhase::Running
+            let phase = match r {
+                // A cue we've stopped with a fade shows as fading at once, before the audio
+                // thread has picked the fade up.
+                Running::Audio { stopped: true, .. } => RunPhase::Fading,
+                Running::Audio { gain, .. } => match gain.phase() {
+                    GainPhase::Waiting => RunPhase::Waiting,
+                    GainPhase::Playing => RunPhase::Running,
+                    GainPhase::Fading | GainPhase::Silent => RunPhase::Fading,
                 },
+                Running::Timer { .. } => RunPhase::Running,
+            };
+            let index = r.index();
+            RunningCue {
+                index,
+                id: self.plan.cues[index].id.clone(),
+                phase,
             }
         }));
-        let prep = self
-            .plan
-            .cues
-            .iter()
-            .enumerate()
-            .map(|(i, c)| match self.cue_asset[i] {
-                Some(a) => CuePrep {
-                    state: self.assets[a].state.clone(),
-                    length: self.assets[a]
-                        .data
-                        .as_ref()
-                        .map(|d| d.duration().as_secs_f64()),
-                },
-                None if c.kind == CueKind::Audio => CuePrep {
-                    state: PrepState::Missing,
-                    length: None,
-                },
-                None => CuePrep {
-                    state: PrepState::NotAudio,
-                    length: Some(c.duration),
-                },
+        let prep = (0..self.plan.cues.len())
+            .map(|i| {
+                let c = &self.plan.cues[i];
+                match self.cue_asset[i] {
+                    Some(a) => {
+                        let asset = &self.assets[a];
+                        let length = match asset.edits.get(&self.edit_key(i)) {
+                            Some(Some(d)) => Some(d.duration().as_secs_f64()),
+                            Some(None) => Some(0.0),
+                            None => None,
+                        };
+                        CuePrep {
+                            state: asset.state.clone(),
+                            length,
+                        }
+                    }
+                    None if c.kind == CueKind::Audio => CuePrep {
+                        state: PrepState::Missing,
+                        length: None,
+                    },
+                    None => CuePrep {
+                        state: PrepState::NotAudio,
+                        length: Some(c.duration),
+                    },
+                }
             })
             .collect();
         Snapshot {
@@ -763,12 +1037,8 @@ impl<B: EngineBackend> Core<B> {
             prep,
             prep_done: self.assets.iter().filter(|a| a.state.is_settled()).count(),
             prep_total: self.assets.len(),
-            decoded_bytes: self
-                .assets
-                .iter()
-                .filter_map(|a| a.data.as_ref())
-                .map(|d| (d.frames.len() * std::mem::size_of::<kira::Frame>()) as u64)
-                .sum(),
+            decoded_bytes: self.assets.iter().map(|a| a.bytes).sum(),
+            master: self.master,
         }
     }
 
@@ -785,12 +1055,12 @@ impl<B: EngineBackend> Core<B> {
         self.snapshot().running.iter().map(|r| r.index).collect()
     }
 
-    /// Position of the running cue `i`, in seconds.
+    /// Seconds cue `i` has played (output time since its first sample).
     pub fn position_of(&self, i: usize) -> Option<f64> {
-        self.running
-            .iter()
-            .find(|r| r.index == i)
-            .map(|r| r.sound.position())
+        self.positions()
+            .into_iter()
+            .find(|p| p.index == i)
+            .map(|p| p.elapsed)
     }
 }
 

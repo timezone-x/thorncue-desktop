@@ -2,6 +2,7 @@
   import { errorText, type ThemeFamily, type ThemeMode } from "../lib/api";
   import { FAMILIES, setTheme, theme } from "../lib/theme.svelte";
   import { showToast } from "../lib/toast.svelte";
+  import AudioSettings from "../components/AudioSettings.svelte";
 
   const MODES: { id: ThemeMode; label: string }[] = [
     { id: "dark", label: "Dark" },
@@ -64,4 +65,6 @@
       <p class="hint">System follows your computer's light or dark setting.</p>
     </fieldset>
   </section>
+
+  <AudioSettings />
 </main>
