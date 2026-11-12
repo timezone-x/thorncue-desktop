@@ -1,0 +1,109 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Old web export",
+    "author": "Connor",
+    "notes": "Made by Export ZIP",
+    "source": null
+  },
+  "assets": {
+    "0a1b2c3d4e5f": {
+      "path": "audio/0a1b2c3d4e5f.mp3",
+      "sha256": "dbd82d7223274813e3ef99ffa05b8578ac74c880e56cc8ab7b1ce3b9e6213f21",
+      "bytes": 8482
+    },
+    "1b2c3d4e5f6a": {
+      "path": "audio/1b2c3d4e5f6a.wav",
+      "sha256": "06cde735c0a83549e3b07d6b2a86310c218c00d576d60cc7ae94fc16b1f41b3d",
+      "bytes": 88278
+    }
+  },
+  "cues": [
+    {
+      "id": "0a1b2c3d4e5f",
+      "type": "audio",
+      "name": "Overture",
+      "asset": "0a1b2c3d4e5f",
+      "volume": 0.9,
+      "fade_in": 0.0,
+      "fade_out": 2.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.5,
+      "trim_end": null,
+      "cuts": [
+        [
+          1.0,
+          1.25
+        ]
+      ]
+    },
+    {
+      "id": "1b2c3d4e5f6a",
+      "type": "audio",
+      "name": "Old cue without newer fields",
+      "asset": "1b2c3d4e5f6a",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": true,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "2c3d4e5f6a7b",
+      "type": "silence",
+      "name": "Silence",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 2.0,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "3d4e5f6a7b8c",
+      "type": "fadeout",
+      "name": "Fade out all",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 2.0,
+      "pre_wait": 0.0,
+      "duration": 3.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "4e5f6a7b8c9d",
+      "type": "audio",
+      "name": "File missing on the server",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

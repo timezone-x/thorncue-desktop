@@ -1,0 +1,12 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Empty show",
+    "author": "",
+    "notes": "",
+    "source": null
+  },
+  "assets": {},
+  "cues": []
+}

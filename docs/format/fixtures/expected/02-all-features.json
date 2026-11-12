@@ -1,0 +1,276 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "All features",
+    "author": "Fixture",
+    "notes": "Every cue type and option.",
+    "source": null
+  },
+  "assets": {
+    "ladder": {
+      "path": "audio/ladder.mp3",
+      "sha256": "d624ce1507d5a4b45590a739b4b148ee85eeb03864a9879fe2c2c5ae3d6030b6",
+      "bytes": 40456
+    },
+    "oggloop": {
+      "path": "audio/oggloop.ogg",
+      "sha256": "8fe413d960d8d9d98a0ca1801814b25a9c6bac52bf24ef5f0289ea12f330a7ee",
+      "bytes": 5594
+    },
+    "flac1": {
+      "path": "audio/flac1.flac",
+      "sha256": "087ad63aceb7ebc7d9dfd7d149353f2ce973a254a72066ea39f055d15c33fe3f",
+      "bytes": 21616
+    },
+    "m4a1": {
+      "path": "audio/m4a1.m4a",
+      "sha256": "164fae0cda81a2826422bbbdee5c1719afa09c7d95fcbc0f478d3ffc04fcfa11",
+      "bytes": 9360
+    },
+    "aiff1": {
+      "path": "audio/aiff1.aiff",
+      "sha256": "9f3ac6fd3714422d7e6854d82bcaefaf8bc665098dcf8af61f0ac6e87afe5933",
+      "bytes": 88254
+    },
+    "stereo": {
+      "path": "audio/stereo.wav",
+      "sha256": "298a6ecf97968b6deababa3dfd46135a7d2ced963f65b3c0e79457fa5eaebbf8",
+      "bytes": 384078
+    },
+    "dcladder": {
+      "path": "audio/dcladder.wav",
+      "sha256": "8b79c90c8d9d86566597975e8f22169d3a342deef49567b799f89297f252edce",
+      "bytes": 160044
+    }
+  },
+  "cues": [
+    {
+      "id": "q01",
+      "type": "audio",
+      "name": "Edited ladder: trims 1.0 to 8.0, cuts 3-4 and 5.5-6, fades",
+      "asset": "ladder",
+      "volume": 0.8,
+      "fade_in": 0.5,
+      "fade_out": 1.0,
+      "pre_wait": 0.25,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 1.0,
+      "trim_end": 8.0,
+      "cuts": [
+        [
+          3.0,
+          4.0
+        ],
+        [
+          5.5,
+          6.0
+        ]
+      ]
+    },
+    {
+      "id": "q02",
+      "type": "audio",
+      "name": "Same file, untouched (shares the asset)",
+      "asset": "ladder",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q03",
+      "type": "audio",
+      "name": "Looping OGG",
+      "asset": "oggloop",
+      "volume": 1.0,
+      "fade_in": 0.2,
+      "fade_out": 2.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": true,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q04",
+      "type": "fadeout",
+      "name": "Fade everything over 1.5 s",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 1.5,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q05",
+      "type": "silence",
+      "name": "Stop all, wait 0.5 s, then continue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.5,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q06",
+      "type": "audio",
+      "name": "FLAC",
+      "asset": "flac1",
+      "volume": 2.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q07",
+      "type": "audio",
+      "name": "M4A (AAC)",
+      "asset": "m4a1",
+      "volume": 0.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q08",
+      "type": "audio",
+      "name": "AIFF",
+      "asset": "aiff1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q09",
+      "type": "audio",
+      "name": "48 kHz stereo WAV, L=440 R=660",
+      "asset": "stereo",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q10",
+      "type": "audio",
+      "name": "DC ladder for engine tests: trim 2-9, cut 4-6",
+      "asset": "dcladder",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 2.0,
+      "trim_end": 9.0,
+      "cuts": [
+        [
+          4.0,
+          6.0
+        ]
+      ]
+    },
+    {
+      "id": "q11",
+      "type": "audio",
+      "name": "Audio cue whose file was missing at export",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "q12",
+      "type": "audio",
+      "name": "Cuts remove everything: length 0",
+      "asset": "flac1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [
+        [
+          0.0,
+          5.0
+        ]
+      ]
+    },
+    {
+      "id": "q13",
+      "type": "silence",
+      "name": "End marker",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

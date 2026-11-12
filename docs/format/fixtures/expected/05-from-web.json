@@ -1,0 +1,40 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "From the web",
+    "author": "Connor",
+    "notes": "",
+    "source": {
+      "kind": "thorncue-web",
+      "server": "https://cue.example.com",
+      "code": "STAGE-4821",
+      "revision": "2026-11-12T03:10:41Z"
+    }
+  },
+  "assets": {
+    "abcdef123456": {
+      "path": "audio/abcdef123456.mp3",
+      "sha256": "dbd82d7223274813e3ef99ffa05b8578ac74c880e56cc8ab7b1ce3b9e6213f21",
+      "bytes": 8482
+    }
+  },
+  "cues": [
+    {
+      "id": "abcdef123456",
+      "type": "audio",
+      "name": "Walk-in",
+      "asset": "abcdef123456",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": true,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}{{ show.name }} · ThornCue{% endblock %}
+{% block body_class %}page-show{% endblock %}
+{% block body_attrs %}data-perms='{{ perms | tojson }}'{% endblock %}
+
+{% block body %}
+<header class="show-head">
+  <label for="show-name" class="sr-only">Show name</label>
+  <input type="text" id="show-name" class="show-head__name" value="{{ show.name }}" maxlength="100"
+    autocomplete="off" {% if not perms.is_owner %}disabled{% endif %}>
+  <button type="button" class="btn show-head__code" id="copy-code" title="Copy show code">{{ show.code }}</button>
+  <label class="master" for="master-vol">Master
+    <input type="range" id="master-vol" min="0" max="1" step="0.01" value="1">
+    <output id="master-vol-out" class="num" for="master-vol">100%</output>
+  </label>
+  <span class="save-state" id="save-state" aria-live="polite"></span>
+  <button type="button" class="btn" id="shortcuts-btn" aria-keyshortcuts="?">Shortcuts</button>
+  <a class="btn" href="{{ url_for('export_show', code=show.code) }}">Export ZIP</a>
+  {% if not session.user_id %}
+  {# Share-link viewers have no nav. New tab, so playback here is never interrupted; the change syncs back via storage. #}
+  <a class="btn" href="{{ url_for('settings') }}" target="_blank" rel="noopener">Theme</a>
+  {% endif %}
+  {% if perms.is_owner %}
+  <button type="button" class="btn" id="dupe-show-btn">Duplicate show</button>
+  <button type="button" class="btn" id="share-btn">Share</button>
+  {% endif %}
+</header>
+
+<section class="transport" aria-label="Transport">
+  <button type="button" class="transport__go" id="go-btn" aria-keyshortcuts="Space">GO</button>
+  <button type="button" class="transport__stop" id="stop-btn" aria-keyshortcuts="Escape">Stop all</button>
+  <div class="transport__more">
+    <button type="button" class="btn" id="pause-btn" aria-keyshortcuts="P">Pause</button>
+    <button type="button" class="btn" id="hardstop-btn"
+      title="Stops everything, including cues still in their pre-wait, and restarts the audio engine">Hard stop</button>
+    <button type="button" class="btn" id="top-btn">Back to top</button>
+  </div>
+  <div class="standby">
+    <span class="standby__label">Standby</span>
+    <span class="standby__name" id="standby-name">No cues</span>
+  </div>
+  <span class="transport__status" id="transport-status" aria-live="polite">Ready</span>
+</section>
+
+<div class="now-playing" id="now-playing">
+  <span class="now-playing__name" id="np-name">Nothing running</span>
+  <canvas id="np-wave" height="32" aria-hidden="true"></canvas>
+  <span class="now-playing__times num" id="np-times"></span>
+</div>
+
+<div class="cue-toolbar">
+  {% if perms.upload %}
+  <button type="button" class="btn btn--primary" id="add-cue-btn">Add cue</button>
+  <button type="button" class="btn" id="import-url-btn">Add from URL</button>
+  <button type="button" class="btn" id="add-silence-btn">Add silence</button>
+  <button type="button" class="btn" id="add-fadeout-btn">Add fade-out</button>
+  {% endif %}
+  <span class="cue-toolbar__count num" id="cue-count"></span>
+</div>
+
+<main class="cue-list-wrap" id="cue-list-wrap">
+  <table class="cue-table">
+    <thead>
+      <tr>
+        <th class="c-grip" scope="col"><span class="sr-only">Reorder</span></th>
+        <th class="c-q" scope="col">Q</th>
+        <th class="c-name" scope="col">Name</th>
+        <th class="c-dur num" scope="col">Length</th>
+        <th class="c-vol num" scope="col">Volume</th>
+        <th class="c-notes" scope="col">Notes</th>
+        <th class="c-state" scope="col">State</th>
+      </tr>
+    </thead>
+    <tbody id="cue-list"></tbody>
+  </table>
+  <div class="cue-list-empty" id="cue-list-empty" hidden>
+    <p>This show has no cues.</p>
+    {% if perms.upload %}<p><button type="button" class="btn btn--primary" id="empty-add-btn">Add a cue</button></p>{% endif %}
+  </div>
+</main>
+
+<div class="inspector-bar" id="inspector-bar">
+  <div class="inspector-bar__grip" id="inspector-grip" role="separator" aria-orientation="horizontal"
+    aria-controls="inspector" aria-label="Resize inspector" tabindex="0"
+    title="Drag to resize the inspector (double-click to reset)"></div>
+  <button type="button" class="inspector-bar__toggle" id="inspector-toggle" aria-controls="inspector"
+    aria-expanded="true" title="Hide inspector" aria-label="Hide inspector">
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4.5 6 8.5 10 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</div>
+<section class="inspector" id="inspector" aria-labelledby="insp-title">
+  <div class="inspector__head">
+    <h2 class="inspector__title" id="insp-title">Inspector</h2>
+    <button type="button" class="btn" id="insp-audition" hidden>Audition</button>
+    {% if perms.upload %}<button type="button" class="btn" id="insp-duplicate" hidden>Duplicate</button>{% endif %}
+    <button type="button" class="btn" id="insp-export" hidden
+      title="Download the audio as it plays: trims, cuts, volume and fades applied">Export WAV</button>
+    <a class="btn" id="insp-original" hidden>Original file</a>
+    {% if perms.upload %}<button type="button" class="btn" id="insp-replace" hidden>Replace file</button>{% endif %}
+    {% if perms.delete %}<button type="button" class="btn btn--danger" id="insp-delete" hidden>Delete</button>{% endif %}
+  </div>
+
+  <p class="inspector__empty" id="insp-empty">Select a cue to see its settings.</p>
+
+  <div class="inspector__body" id="insp-body" hidden>
+    <div class="inspector__fields">
+      <div class="field">
+        <label for="f-name">Name</label>
+        <input type="text" id="f-name" maxlength="100" autocomplete="off">
+      </div>
+      <div class="field" data-kind="audio">
+        <label for="f-vol">Volume (%)</label>
+        <div class="vol-row">
+          <input type="range" id="f-vol-range" min="0" max="200" step="1" aria-label="Volume">
+          <input type="number" id="f-vol" min="0" max="200" step="1">
+        </div>
+      </div>
+      <div class="field-row" data-kind="audio">
+        <div class="field">
+          <label for="f-fadein">Fade in (s)</label>
+          <input type="number" id="f-fadein" min="0" max="600" step="0.1">
+        </div>
+        <div class="field">
+          <label for="f-fadeout">Fade out (s)</label>
+          <input type="number" id="f-fadeout" min="0" max="600" step="0.1">
+        </div>
+      </div>
+      <div class="field" data-kind="audio">
+        <label for="f-prewait">Pre-wait (s)</label>
+        <input type="number" id="f-prewait" min="0" max="3600" step="0.1" aria-describedby="f-prewait-hint">
+        <p class="hint" id="f-prewait-hint">Delay between GO and the sound starting.</p>
+      </div>
+      <div class="field" data-kind="control">
+        <label for="f-duration" id="f-duration-label">Duration (s)</label>
+        <input type="number" id="f-duration" min="0" max="3600" step="0.1" aria-describedby="f-duration-hint">
+        <p class="hint" id="f-duration-hint"></p>
+      </div>
+      <div class="checks">
+        <label class="check" data-kind="audio"><input type="checkbox" id="f-loop"> Loop</label>
+        <label class="check"><input type="checkbox" id="f-auto"> Auto-continue to the next cue when this one ends</label>
+      </div>
+    </div>
+
+    <div class="trim" id="trim" data-kind="audio">
+      <h3>Trim and cut</h3>
+      <canvas class="trim__wave" id="trim-wave" tabindex="0"
+        aria-label="Waveform. Drag the in and out markers to trim. Drag across a section to select it. Click to place the audition start."></canvas>
+      <p class="trim__readout num" id="trim-readout">
+        <span>In <b id="t-in">0:00.00</b></span>
+        <span>Out <b id="t-out">0:00.00</b></span>
+        <span>Plays for <b id="t-len">0:00.00</b></span>
+        <span id="t-sel-wrap" hidden>Selected <b id="t-sel"></b></span>
+      </p>
+      <div class="trim__buttons">
+        <button type="button" class="btn" id="t-audition">Audition from marker</button>
+        <button type="button" class="btn" id="t-set-in" aria-keyshortcuts="I">Set in</button>
+        <button type="button" class="btn" id="t-set-out" aria-keyshortcuts="O">Set out</button>
+        <button type="button" class="btn" id="t-cut" aria-keyshortcuts="X" disabled>Cut selection</button>
+        <button type="button" class="btn" id="t-undo" aria-keyshortcuts="Control+Z" disabled>Undo</button>
+        <button type="button" class="btn" id="t-restore">Restore full file</button>
+      </div>
+      <ul class="trim__cuts" id="t-cuts"></ul>
+      <p class="trim__note" id="t-note">The uploaded file is never changed. Restore full file undoes every trim and cut.</p>
+    </div>
+  </div>
+</section>
+
+<input type="file" id="replace-file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aiff,.aif" hidden>
+
+{% if perms.upload %}
+<dialog id="add-dialog" aria-labelledby="add-title">
+  <form id="add-form">
+    <div class="dialog-head"><h2 id="add-title">Add cue</h2></div>
+    <div class="dialog-body">
+      <label class="drop-zone" id="drop-zone">
+        <input type="file" id="add-file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aiff,.aif">
+        <span id="drop-text">Drop an audio file here, or click to choose one.</span><br>
+        <span class="muted">MP3, WAV, OGG, FLAC, M4A or AIFF, up to {{ max_upload_mb }} MB.</span>
+      </label>
+      <audio id="add-preview" controls preload="metadata" hidden></audio>
+      <div class="field">
+        <label for="add-name">Cue name</label>
+        <input type="text" id="add-name" maxlength="100" autocomplete="off">
+      </div>
+      <progress id="add-progress" max="1" value="0" hidden></progress>
+      <p class="hint status-error" id="add-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn--primary" id="add-submit">Upload and add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="url-dialog" aria-labelledby="url-title">
+  <form id="url-form">
+    <div class="dialog-head"><h2 id="url-title">Add cue from URL</h2></div>
+    <div class="dialog-body">
+      <p>YouTube, SoundCloud or Vimeo links. Only the audio is downloaded, up to 2 minutes long.</p>
+      <div class="field">
+        <label for="url-input">Link</label>
+        <input type="url" id="url-input" required>
+      </div>
+      <p class="hint" id="url-info" aria-live="polite"></p>
+      <div class="field" id="url-name-field" hidden>
+        <label for="url-name">Cue name</label>
+        <input type="text" id="url-name" maxlength="100">
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn" id="url-check">Check link</button>
+      <button type="button" class="btn btn--primary" id="url-add" hidden>Download and add</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+{% if perms.is_owner %}
+<dialog id="dupe-dialog" aria-labelledby="dupe-title">
+  <form id="dupe-form">
+    <div class="dialog-head"><h2 id="dupe-title">Duplicate show</h2></div>
+    <div class="dialog-body">
+      <p>Copies every cue and audio file into a new show that you own.</p>
+      <div class="field">
+        <label for="dupe-code">New show code</label>
+        <div class="code-row">
+          <input type="text" id="dupe-code" maxlength="20" autocapitalize="characters" spellcheck="false" required
+            aria-describedby="dupe-status">
+          <button type="button" class="btn" id="dupe-suggest">Suggest</button>
+        </div>
+        <p class="hint" id="dupe-status" aria-live="polite"></p>
+      </div>
+      <div class="field">
+        <label for="dupe-name">New show name</label>
+        <input type="text" id="dupe-name" maxlength="100" value="{{ show.name }} (copy)" required>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn--primary" id="dupe-submit">Duplicate show</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="share-dialog" class="dialog--wide" aria-labelledby="share-title">
+  <div class="dialog-head">
+    <h2 id="share-title">Share {{ show.name }}</h2>
+    <button type="button" class="btn" data-close>Close</button>
+  </div>
+  <div class="dialog-body">
+    <div class="dialog-section">
+      <h3>People</h3>
+      <div id="shares-list"></div>
+      <form class="grant-add" id="share-add-form">
+        <label for="share-username" class="sr-only">Username</label>
+        <input type="text" id="share-username" placeholder="Username" autocomplete="off" required>
+        <label class="check"><input type="checkbox" name="playback" checked> Play</label>
+        <label class="check"><input type="checkbox" name="upload"> Add cues</label>
+        <label class="check"><input type="checkbox" name="edit"> Edit</label>
+        <label class="check"><input type="checkbox" name="delete"> Delete cues</label>
+        <button type="submit" class="btn btn--primary">Add person</button>
+      </form>
+    </div>
+
+    <div class="dialog-section">
+      <h3>Links</h3>
+      <p class="hint">Anyone with a link gets the permissions you tick, without an account.</p>
+      <div id="links-list"></div>
+      <form class="grant-add" id="link-add-form">
+        <label for="link-label" class="sr-only">Link name</label>
+        <input type="text" id="link-label" placeholder="Who it's for, e.g. Stage manager" maxlength="100">
+        <label class="check"><input type="checkbox" name="playback" checked> Play</label>
+        <label class="check"><input type="checkbox" name="upload"> Add cues</label>
+        <label class="check"><input type="checkbox" name="edit"> Edit</label>
+        <label class="check"><input type="checkbox" name="delete"> Delete cues</label>
+        <button type="submit" class="btn btn--primary">Create link</button>
+      </form>
+    </div>
+
+    <div class="dialog-section">
+      <h3>Transfer ownership</h3>
+      <p class="hint">The new owner gets full control. You keep full access as a shared user.</p>
+      <form class="grant-add" id="transfer-form">
+        <label for="transfer-username" class="sr-only">New owner's username</label>
+        <input type="text" id="transfer-username" placeholder="New owner's username" autocomplete="off" required>
+        <button type="submit" class="btn btn--danger">Transfer</button>
+      </form>
+    </div>
+  </div>
+</dialog>
+{% endif %}
+
+<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+  <div class="dialog-head">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <button type="button" class="btn" data-close>Close</button>
+  </div>
+  <div class="dialog-body">
+    <table class="shortcuts">
+      <tr><td><kbd>Space</kbd></td><td>GO: play the standby cue</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Stop all</td></tr>
+      <tr><td><kbd>P</kbd></td><td>Pause or resume everything</td></tr>
+      <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move standby up or down</td></tr>
+      <tr><td><kbd>J</kbd></td><td>Jump to a cue number and play it</td></tr>
+      <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Set the in or out point at the audition playhead</td></tr>
+      <tr><td><kbd>X</kbd></td><td>Cut the selected section</td></tr>
+      <tr><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>Undo the last trim or cut</td></tr>
+      <tr><td><kbd>?</kbd></td><td>This list</td></tr>
+    </table>
+  </div>
+</dialog>
+
+<dialog id="jump-dialog" aria-labelledby="jump-title">
+  <form id="jump-form">
+    <div class="dialog-head"><h2 id="jump-title">Jump to cue</h2></div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="jump-input">Cue number</label>
+        <input type="number" id="jump-input" min="1" step="1" required>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn--primary">Jump and play</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script id="show-data" type="application/json">{{ show | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

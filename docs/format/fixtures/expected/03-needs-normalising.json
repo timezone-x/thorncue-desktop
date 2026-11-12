@@ -1,0 +1,76 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Untitled show",
+    "author": "Someone",
+    "notes": "",
+    "source": null
+  },
+  "assets": {
+    "t": {
+      "path": "audio/t.wav",
+      "sha256": "06cde735c0a83549e3b07d6b2a86310c218c00d576d60cc7ae94fc16b1f41b3d",
+      "bytes": 88278
+    }
+  },
+  "cues": [
+    {
+      "id": "a",
+      "type": "audio",
+      "name": "Untitled cue",
+      "asset": "t",
+      "volume": 2.0,
+      "fade_in": 0.0,
+      "fade_out": 600.0,
+      "pre_wait": 3600.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 1.5,
+      "trim_end": null,
+      "cuts": [
+        [
+          0.2,
+          0.8
+        ],
+        [
+          1.2,
+          1.4
+        ]
+      ]
+    },
+    {
+      "id": "b",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "c",
+      "type": "fadeout",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 2.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 3.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

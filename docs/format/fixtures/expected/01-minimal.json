@@ -1,0 +1,35 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Minimal",
+    "author": "",
+    "notes": "",
+    "source": null
+  },
+  "assets": {
+    "tone1": {
+      "path": "audio/tone1.wav",
+      "sha256": "06cde735c0a83549e3b07d6b2a86310c218c00d576d60cc7ae94fc16b1f41b3d",
+      "bytes": 88278
+    }
+  },
+  "cues": [
+    {
+      "id": "q1",
+      "type": "audio",
+      "name": "Tone",
+      "asset": "tone1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

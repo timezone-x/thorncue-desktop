@@ -1,0 +1,188 @@
+[
+  {
+    "file": "valid/01-minimal.tqs",
+    "expect": "accept",
+    "about": "One WAV cue. The smallest real show.",
+    "expected": "expected/01-minimal.json"
+  },
+  {
+    "file": "valid/02-all-features.tqs",
+    "expect": "accept",
+    "about": "Every cue type, every format, shared asset, missing asset (asset null), trims, cuts, loop, fades, continue.",
+    "expected": "expected/02-all-features.json"
+  },
+  {
+    "file": "valid/03-needs-normalising.tqs",
+    "expect": "accept",
+    "about": "Defaults, clamping, cut merging, unknown fields, junk entries, unused audio, manifest not dropping fields it must ignore. Compare with expected/.",
+    "expected": "expected/03-needs-normalising.json"
+  },
+  {
+    "file": "valid/04-empty.tqs",
+    "expect": "accept",
+    "about": "No cues, no audio.",
+    "expected": "expected/04-empty.json"
+  },
+  {
+    "file": "valid/05-from-web.tqs",
+    "expect": "accept",
+    "about": "Has show.source, as the web's package endpoint writes it.",
+    "expected": "expected/05-from-web.json"
+  },
+  {
+    "file": "invalid/bad-format-name.tqs",
+    "expect": "reject",
+    "rule": "2.1 format",
+    "about": "format is not thorncue.show"
+  },
+  {
+    "file": "invalid/future-version.tqs",
+    "expect": "reject",
+    "rule": "2.1 format_version",
+    "about": "format_version 2: must say 'update ThornCue'"
+  },
+  {
+    "file": "invalid/unknown-cue-type.tqs",
+    "expect": "reject",
+    "rule": "2.6 unknown enum",
+    "about": "cue type 'midi'"
+  },
+  {
+    "file": "invalid/unknown-continue.tqs",
+    "expect": "reject",
+    "rule": "2.6 unknown enum",
+    "about": "continue 'with_start'"
+  },
+  {
+    "file": "invalid/wrong-type.tqs",
+    "expect": "reject",
+    "rule": "2.4 types",
+    "about": "volume is a string"
+  },
+  {
+    "file": "invalid/duplicate-cue-id.tqs",
+    "expect": "reject",
+    "rule": "2.4 id",
+    "about": "two cues with id q1"
+  },
+  {
+    "file": "invalid/silence-with-asset.tqs",
+    "expect": "reject",
+    "rule": "2.4 asset",
+    "about": "a silence cue that points at audio"
+  },
+  {
+    "file": "invalid/unknown-asset.tqs",
+    "expect": "reject",
+    "rule": "4.3 cross-reference",
+    "about": "cue points at an asset id not in assets"
+  },
+  {
+    "file": "invalid/asset-entry-missing.tqs",
+    "expect": "reject",
+    "rule": "2.3 / 4.3",
+    "about": "asset listed, audio entry missing from zip"
+  },
+  {
+    "file": "invalid/sha-mismatch.tqs",
+    "expect": "reject",
+    "rule": "4.4 hash",
+    "about": "audio bytes don't match sha256"
+  },
+  {
+    "file": "invalid/size-mismatch.tqs",
+    "expect": "reject",
+    "rule": "4.4 size",
+    "about": "bytes field doesn't match the entry"
+  },
+  {
+    "file": "invalid/not-audio.tqs",
+    "expect": "reject",
+    "rule": "4.5 decode",
+    "about": "a text file named .wav with a correct hash"
+  },
+  {
+    "file": "invalid/bad-asset-path.tqs",
+    "expect": "reject",
+    "rule": "2.3 path",
+    "about": "asset path doesn't match its id"
+  },
+  {
+    "file": "invalid/path-traversal.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 1",
+    "about": "an entry named ../evil.wav"
+  },
+  {
+    "file": "invalid/absolute-path.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 1",
+    "about": "an entry named /tmp/evil.wav"
+  },
+  {
+    "file": "invalid/backslash-path.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 1",
+    "about": "an entry named audio\\..\\evil.wav"
+  },
+  {
+    "file": "invalid/symlink.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 2",
+    "about": "a symlink entry"
+  },
+  {
+    "file": "invalid/case-collision.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 3",
+    "about": "audio/tone1.wav and audio/TONE1.wav"
+  },
+  {
+    "file": "invalid/extra-file.tqs",
+    "expect": "reject",
+    "rule": "1.1",
+    "about": "an unexpected notes.txt at the root"
+  },
+  {
+    "file": "invalid/zip-bomb.tqs",
+    "expect": "reject",
+    "rule": "1.3 rule 7",
+    "about": "8 MiB of zeros deflated to a few KB under audio/"
+  },
+  {
+    "file": "invalid/manifest-infinity.tqs",
+    "expect": "reject",
+    "rule": "2.4 finite",
+    "about": "manifest contains the token Infinity"
+  },
+  {
+    "file": "invalid/manifest-bom.tqs",
+    "expect": "reject",
+    "rule": "2 manifest",
+    "about": "manifest.json starts with a UTF-8 BOM"
+  },
+  {
+    "file": "invalid/manifest-not-json.tqs",
+    "expect": "reject",
+    "rule": "2 manifest",
+    "about": "manifest.json is not JSON"
+  },
+  {
+    "file": "invalid/no-manifest.tqs",
+    "expect": "reject",
+    "rule": "1.1",
+    "about": "no manifest.json at all"
+  },
+  {
+    "file": "invalid/not-a-zip.tqs",
+    "expect": "reject",
+    "rule": "1",
+    "about": "not a zip archive"
+  },
+  {
+    "file": "legacy/web-export-STAGE-4821.zip",
+    "expect": "accept-legacy",
+    "about": "The web's original Export ZIP layout. Convert per FORMAT.md section 5.",
+    "expected": "expected/legacy-web-export-STAGE-4821.json"
+  }
+]
