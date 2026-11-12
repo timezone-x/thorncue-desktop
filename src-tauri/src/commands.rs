@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use engine::Command;
+
 use crate::AppState;
 use crate::library::{LocalState, ShowSummary};
 use crate::settings::{FAMILIES, MODES, Settings};
@@ -180,12 +182,85 @@ pub fn open_show(id: String, state: State<'_, AppState>) -> Result<ShowView, Str
         "This show can't be opened: its files are damaged and there is no good backup. Import it again.".to_string()
     })?;
     let v = view(&loaded);
+    let plan = crate::playback::plan_for(&loaded.dir, &loaded.manifest, loaded.local.standby_index);
+    *state.open_dir.lock().map_err(|_| busy())? = Some(loaded.dir.clone());
     *state.open_show.lock().map_err(|_| busy())? = Some(loaded);
+    send(&state, Command::LoadShow(plan))?;
     Ok(v)
 }
 
 #[tauri::command]
 pub fn close_show(state: State<'_, AppState>) -> Result<(), String> {
+    // Closing a show stops it.
+    send(&state, Command::LoadShow(engine::ShowPlan::default()))?;
+    *state.open_dir.lock().map_err(|_| busy())? = None;
     *state.open_show.lock().map_err(|_| busy())? = None;
     Ok(())
+}
+
+/// The show that is open, if any: a reloaded webview uses this to come back to it.
+#[tauri::command]
+pub fn get_open_show(state: State<'_, AppState>) -> Result<Option<ShowView>, String> {
+    Ok(state
+        .open_show
+        .lock()
+        .map_err(|_| busy())?
+        .as_ref()
+        .map(view))
+}
+
+// ---------------------------------------------------------------------------
+// Transport. Each command is an intent; the engine decides what it means.
+// ---------------------------------------------------------------------------
+
+fn send(state: &AppState, cmd: Command) -> Result<(), String> {
+    state.engine.send(cmd).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_engine_state(state: State<'_, AppState>) -> engine::Snapshot {
+    let s = state.engine.snapshot();
+    tracing::debug!(
+        "UI asked for engine state: revision {}, standby {}, {} running",
+        s.revision,
+        s.standby,
+        s.running.len()
+    );
+    s
+}
+
+#[tauri::command]
+pub fn go(state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::Go)
+}
+
+#[tauri::command]
+pub fn stop_all(panic: bool, state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::StopAll { panic })
+}
+
+#[tauri::command]
+pub fn toggle_pause(state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::TogglePause)
+}
+
+#[tauri::command]
+pub fn set_standby(index: usize, state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::SetStandby(index))
+}
+
+#[tauri::command]
+pub fn move_standby(delta: i32, state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::MoveStandby(delta))
+}
+
+/// J: play cue number `number` (1-based, as the operator types it).
+#[tauri::command]
+pub fn jump(number: usize, state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::JumpAndPlay(number.saturating_sub(1)))
+}
+
+#[tauri::command]
+pub fn restart_engine(state: State<'_, AppState>) -> Result<(), String> {
+    send(&state, Command::RestartAudio)
 }

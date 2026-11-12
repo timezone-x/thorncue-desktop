@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
-  import { api, errorText, isTauri, type ShowView } from "./lib/api";
+  import { api, errorText, isTauri, transport, type ShowView } from "./lib/api";
+  import { startEngineMirror } from "./lib/engine.svelte";
   import { importFiles } from "./lib/importer.svelte";
   import { loadTheme } from "./lib/theme.svelte";
   import { toast, showToast } from "./lib/toast.svelte";
@@ -44,6 +45,13 @@
     (async () => {
       try {
         await loadTheme();
+        await startEngineMirror();
+        // After a webview reload the show is still open (and maybe playing) in Rust: go back to it.
+        const open = await transport.openShow();
+        if (open) {
+          show = open;
+          screen = "show";
+        }
       } catch (e) {
         showToast(errorText(e), true);
       }

@@ -535,3 +535,7 @@ body.is-resizing-inspector { cursor: row-resize; user-select: none; }
 .recovered { margin: 8px 16px 0; }
 .show-head__title { display: flex; align-items: center; padding: 0 8px; margin: 0; line-height: 24px; }
 div.error-list { padding-left: 12px; }
+.transport__status.is-error { color: var(--stop-text); font-weight: 600; }
+.device-alert { margin: 8px 16px 0; max-width: none; }
+.np-bar { height: 6px; border-radius: 3px; background: var(--wave-off); overflow: hidden; }
+.np-bar__fill { height: 100%; background: var(--go-text); }

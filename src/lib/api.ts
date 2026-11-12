@@ -90,3 +90,56 @@ export const api = {
   openShow: (id: string) => invoke<ShowView>("open_show", { id }),
   closeShow: () => invoke<void>("close_show"),
 };
+
+// ---- Engine (crates/engine/src/state.rs) ----
+
+export type PrepState =
+  | { state: "not_audio" }
+  | { state: "pending" }
+  | { state: "decoding" }
+  | { state: "ready" }
+  | { state: "missing" }
+  | { state: "failed"; reason: string };
+
+export type CuePrep = PrepState & { length: number | null };
+
+export type RunPhase = "starting" | "waiting" | "running" | "fading";
+
+export interface EngineSnapshot {
+  revision: number;
+  status: "ok" | "device_lost" | "restarting" | "no_output";
+  status_message: string | null;
+  paused: boolean;
+  standby: number;
+  cue_count: number;
+  running: { index: number; id: string; phase: RunPhase }[];
+  prep: CuePrep[];
+  prep_done: number;
+  prep_total: number;
+  decoded_bytes: number;
+}
+
+export interface Position {
+  index: number;
+  id: string;
+  elapsed: number;
+  remaining: number | null;
+  length: number;
+}
+
+export interface Notice {
+  text: string;
+  error: boolean;
+}
+
+export const transport = {
+  state: () => invoke<EngineSnapshot>("get_engine_state"),
+  openShow: () => invoke<ShowView | null>("get_open_show"),
+  go: () => invoke<void>("go"),
+  stopAll: (panic: boolean) => invoke<void>("stop_all", { panic }),
+  togglePause: () => invoke<void>("toggle_pause"),
+  setStandby: (index: number) => invoke<void>("set_standby", { index }),
+  moveStandby: (delta: number) => invoke<void>("move_standby", { delta }),
+  jump: (number: number) => invoke<void>("jump", { number }),
+  restart: () => invoke<void>("restart_engine"),
+};

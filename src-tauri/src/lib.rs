@@ -4,6 +4,7 @@
 mod commands;
 mod fsutil;
 mod library;
+mod playback;
 mod settings;
 
 use std::path::PathBuf;
@@ -21,6 +22,9 @@ pub struct AppState {
     pub library: Library,
     /// The show on the Show screen, if any.
     pub open_show: Mutex<Option<LoadedShow>>,
+    /// Its folder, shared with the thread that saves standby.
+    pub open_dir: playback::OpenShowDir,
+    pub engine: engine::Engine,
 }
 
 pub fn run() {
@@ -41,11 +45,15 @@ pub fn run() {
             let init = settings::theme_init_script(&settings);
             let library = Library::new(&data_dir)?;
             tracing::info!("library at {}", library.root().display());
+            let open_dir = playback::OpenShowDir::default();
+            let engine = playback::start_engine(app.handle().clone(), open_dir.clone());
             app.manage(AppState {
                 settings_path,
                 settings: Mutex::new(settings),
                 library,
                 open_show: Mutex::new(None),
+                open_dir,
+                engine,
             });
 
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -72,6 +80,15 @@ pub fn run() {
             commands::delete_show,
             commands::open_show,
             commands::close_show,
+            commands::get_open_show,
+            commands::get_engine_state,
+            commands::go,
+            commands::stop_all,
+            commands::toggle_pause,
+            commands::set_standby,
+            commands::move_standby,
+            commands::jump,
+            commands::restart_engine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ThornCue");
