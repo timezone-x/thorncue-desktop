@@ -1,0 +1,288 @@
+/* ThornCue theme and layout tokens, copied verbatim from reference/web/style.css (lines 1-288). Token reasons live in DESIGN.md; keep the two in step. */
+
+/* ---- Colour themes ----
+   Selected by data-theme on <html> (family-mode, e.g. booth-light). Graphite dark is the default.
+   Every pairing was checked for WCAG AA: text 4.5:1, white on GO/STOP/primary 4.5:1,
+   control borders and focus/select line 3:1. Treat the values as final. */
+
+/* Graphite, dark */
+:root,
+[data-theme="graphite-dark"] {
+  color-scheme: dark;
+  --bg: #161616;
+  --surface: #1E1E1E;
+  --chrome: #262626;
+  --control: #2B2B2B;
+  --control-hover: #353535;
+  --border: #333333;
+  --border-control: #787878;
+  --text: #E6E6E6;
+  --text-muted: #A6A6A6;
+  --select-fill: #24364A;
+  --select-line: #7DB4F0;
+  --select-button: #2F6FB5;
+  --select-button-hover: #3A7CC4;
+  --go: #1F7A3E;
+  --go-hover: #258A48;
+  --go-text: #6CC788;
+  --go-fill: #1C3324;
+  --stop: #B3362D;
+  --stop-hover: #C43F35;
+  --stop-text: #F08A80;
+  --stop-fill: #3A1F1C;
+  --warning-text: #E6B35A;
+  --on-accent: #FFFFFF;
+  --wave: #8C8C8C;
+  --wave-off: #454545;
+  --select-wash: rgb(125 180 240 / 0.22);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.5);
+  --backdrop: rgb(0 0 0 / 0.6);
+}
+
+/* Graphite, light */
+[data-theme="graphite-light"] {
+  color-scheme: light;
+  --bg: #F4F4F4;
+  --surface: #FFFFFF;
+  --chrome: #E9E9E9;
+  --control: #FFFFFF;
+  --control-hover: #EFEFEF;
+  --border: #D9D9D9;
+  --border-control: #858585;
+  --text: #1C1C1C;
+  --text-muted: #5C5C5C;
+  --select-fill: #DCE9F8;
+  --select-line: #2563A8;
+  --select-button: #2F6FB5;
+  --select-button-hover: #285F9C;
+  --go: #1F7A3E;
+  --go-hover: #1A6A35;
+  --go-text: #17672F;
+  --go-fill: #DCEFE2;
+  --stop: #B3362D;
+  --stop-hover: #9E2F27;
+  --stop-text: #9E2F27;
+  --stop-fill: #F8E0DD;
+  --warning-text: #8A5A00;
+  --on-accent: #FFFFFF;
+  --wave: #6E6E6E;
+  --wave-off: #C8C8C8;
+  --select-wash: rgb(37 99 168 / 0.18);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.12);
+  --backdrop: rgb(0 0 0 / 0.35);
+}
+
+/* Ghost Light, dark */
+[data-theme="ghost-light-dark"] {
+  color-scheme: dark;
+  --bg: #171513;
+  --surface: #1F1C19;
+  --chrome: #27231F;
+  --control: #2D2924;
+  --control-hover: #38332D;
+  --border: #36312B;
+  --border-control: #7D756B;
+  --text: #EDE6DC;
+  --text-muted: #ABA294;
+  --select-fill: #3A2E17;
+  --select-line: #F0B44C;
+  --select-button: #8F5C10;
+  --select-button-hover: #A06A18;
+  --go: #1F7A3E;
+  --go-hover: #258A48;
+  --go-text: #74C98C;
+  --go-fill: #1E3222;
+  --stop: #B3362D;
+  --stop-hover: #C43F35;
+  --stop-text: #F08A80;
+  --stop-fill: #3B1F1A;
+  --warning-text: #E3D35A;
+  --on-accent: #FFFFFF;
+  --wave: #8F877C;
+  --wave-off: #48423B;
+  --select-wash: rgb(240 180 76 / 0.22);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.5);
+  --backdrop: rgb(0 0 0 / 0.6);
+}
+
+/* Ghost Light, light */
+[data-theme="ghost-light-light"] {
+  color-scheme: light;
+  --bg: #F6F2EC;
+  --surface: #FFFDF9;
+  --chrome: #ECE5DB;
+  --control: #FFFDF9;
+  --control-hover: #F1EADF;
+  --border: #DED5C8;
+  --border-control: #8A7F70;
+  --text: #221D17;
+  --text-muted: #635A4D;
+  --select-fill: #F6E3BE;
+  --select-line: #8F5C10;
+  --select-button: #8F5C10;
+  --select-button-hover: #7C4F0C;
+  --go: #1F7A3E;
+  --go-hover: #1A6A35;
+  --go-text: #17672F;
+  --go-fill: #DCEFE2;
+  --stop: #B3362D;
+  --stop-hover: #9E2F27;
+  --stop-text: #9E2F27;
+  --stop-fill: #F8E0DD;
+  --warning-text: #6B6400;
+  --on-accent: #FFFFFF;
+  --wave: #7A7064;
+  --wave-off: #D6CCBE;
+  --select-wash: rgb(143 92 16 / 0.18);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.12);
+  --backdrop: rgb(0 0 0 / 0.35);
+}
+
+/* Booth, dark */
+[data-theme="booth-dark"] {
+  color-scheme: dark;
+  --bg: #12161B;
+  --surface: #181D24;
+  --chrome: #1F252D;
+  --control: #252C35;
+  --control-hover: #2E3640;
+  --border: #2C343E;
+  --border-control: #6E7A88;
+  --text: #E2E8EF;
+  --text-muted: #9BA7B4;
+  --select-fill: #123A44;
+  --select-line: #4FD1E0;
+  --select-button: #0B6E7C;
+  --select-button-hover: #0F7F8E;
+  --go: #1D7A45;
+  --go-hover: #238A4F;
+  --go-text: #62D093;
+  --go-fill: #15332A;
+  --stop: #B3362D;
+  --stop-hover: #C43F35;
+  --stop-text: #F28B82;
+  --stop-fill: #3A1E22;
+  --warning-text: #E6B35A;
+  --on-accent: #FFFFFF;
+  --wave: #7E8A97;
+  --wave-off: #3A434D;
+  --select-wash: rgb(79 209 224 / 0.22);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.5);
+  --backdrop: rgb(0 0 0 / 0.6);
+}
+
+/* Booth, light */
+[data-theme="booth-light"] {
+  color-scheme: light;
+  --bg: #F1F4F7;
+  --surface: #FFFFFF;
+  --chrome: #E3E8EE;
+  --control: #FFFFFF;
+  --control-hover: #EAEFF4;
+  --border: #D3DBE3;
+  --border-control: #7A8795;
+  --text: #17202A;
+  --text-muted: #54606C;
+  --select-fill: #D2EEF2;
+  --select-line: #0B6E7C;
+  --select-button: #0B6E7C;
+  --select-button-hover: #095D69;
+  --go: #1F7A3E;
+  --go-hover: #1A6A35;
+  --go-text: #17672F;
+  --go-fill: #DCEFE2;
+  --stop: #B3362D;
+  --stop-hover: #9E2F27;
+  --stop-text: #9E2F27;
+  --stop-fill: #F8E0DD;
+  --warning-text: #8A5A00;
+  --on-accent: #FFFFFF;
+  --wave: #6A7682;
+  --wave-off: #C7D0D9;
+  --select-wash: rgb(11 110 124 / 0.18);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.12);
+  --backdrop: rgb(0 0 0 / 0.35);
+}
+
+/* Thorn, dark */
+[data-theme="thorn-dark"] {
+  color-scheme: dark;
+  --bg: #17141A;
+  --surface: #1E1A21;
+  --chrome: #26212A;
+  --control: #2C2630;
+  --control-hover: #372F3C;
+  --border: #352E3A;
+  --border-control: #7C7183;
+  --text: #ECE6F0;
+  --text-muted: #AA9FB1;
+  --select-fill: #33264D;
+  --select-line: #B79CF5;
+  --select-button: #6847B8;
+  --select-button-hover: #7655C6;
+  --go: #1F7A3E;
+  --go-hover: #258A48;
+  --go-text: #6FC98A;
+  --go-fill: #1C3226;
+  --stop: #B3362D;
+  --stop-hover: #C43F35;
+  --stop-text: #F28C84;
+  --stop-fill: #3B1E22;
+  --warning-text: #E6B35A;
+  --on-accent: #FFFFFF;
+  --wave: #8E8495;
+  --wave-off: #463E4B;
+  --select-wash: rgb(183 156 245 / 0.22);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.5);
+  --backdrop: rgb(0 0 0 / 0.6);
+}
+
+/* Thorn, light */
+[data-theme="thorn-light"] {
+  color-scheme: light;
+  --bg: #F5F2F7;
+  --surface: #FFFFFF;
+  --chrome: #E9E3ED;
+  --control: #FFFFFF;
+  --control-hover: #F0EBF3;
+  --border: #DDD5E2;
+  --border-control: #83778A;
+  --text: #1F1A23;
+  --text-muted: #5E5465;
+  --select-fill: #E6DDFA;
+  --select-line: #6847B8;
+  --select-button: #6847B8;
+  --select-button-hover: #5A3BA4;
+  --go: #1F7A3E;
+  --go-hover: #1A6A35;
+  --go-text: #17672F;
+  --go-fill: #DCEFE2;
+  --stop: #B3362D;
+  --stop-hover: #9E2F27;
+  --stop-text: #9E2F27;
+  --stop-fill: #F8E0DD;
+  --warning-text: #8A5A00;
+  --on-accent: #FFFFFF;
+  --wave: #74697B;
+  --wave-off: #D3CAD8;
+  --select-wash: rgb(104 71 184 / 0.18);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.12);
+  --backdrop: rgb(0 0 0 / 0.35);
+}
+
+/* ---- Layout tokens (shared by every theme) ---- */
+
+:root {
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-code: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+
+  --text-size: 14px;
+  --line: 20px;
+  --control-h: 32px;
+  --row-h: 40px;
+  --space: 4px;
+
+  --radius: 4px;
+  --radius-dialog: 6px;
+  --dur: 120ms;
+}
