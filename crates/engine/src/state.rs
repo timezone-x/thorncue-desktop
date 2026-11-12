@@ -84,6 +84,8 @@ pub struct Snapshot {
     pub prep_total: usize,
     /// Bytes of decoded audio held in memory.
     pub decoded_bytes: u64,
+    /// Master volume, linear 0..=1.
+    pub master: f64,
 }
 
 impl Snapshot {
@@ -100,6 +102,7 @@ impl Snapshot {
             prep_done: 0,
             prep_total: 0,
             decoded_bytes: 0,
+            master: 1.0,
         }
     }
 }
@@ -113,6 +116,8 @@ pub struct Position {
     /// Seconds left, or `None` for a looping cue.
     pub remaining: Option<f64>,
     pub length: f64,
+    /// A silence or fade-out cue (the strip shows it only when no audio is running).
+    pub control: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

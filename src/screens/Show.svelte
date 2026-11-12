@@ -59,21 +59,25 @@
   // ---- Now playing: the most recently started cue, as the web ----
 
   const nowPlaying = $derived.by(() => {
-    const p = engine.positions[engine.positions.length - 1];
+    // The most recently started audio cue; a silence/fade-out cue only when nothing else plays.
+    const audio = engine.positions.filter((p) => !p.control);
+    const p = audio[audio.length - 1] ?? engine.positions[engine.positions.length - 1];
     if (!p) {
       const r = snap?.running[snap.running.length - 1];
-      if (r) return { name: `Q${r.index + 1} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0, phase: r.phase };
+      if (r) return { name: `Q${r.index + 1} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
       return null;
     }
     const phase = snap?.running.find((r) => r.index === p.index)?.phase ?? "running";
-    const name = `Q${p.index + 1} ${cues[p.index]?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
     const cue = cues[p.index];
+    const name = `Q${p.index + 1} ${cue?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
     let times: string;
     if (phase === "waiting") times = `Waiting (pre-wait ${cue?.pre_wait ?? 0} s)`;
+    else if (p.control) times = `${fmtTime(p.remaining ?? 0, true)} left`;
     else if (p.remaining === null) times = `${fmtTime(p.elapsed % Math.max(p.length, 0.001))} of ${fmtTime(p.length)}, looping`;
     else times = `${fmtTime(p.elapsed)} of ${fmtTime(p.length)}, ${fmtTime(p.remaining)} left`;
-    const fraction = p.length > 0 ? Math.min(1, (p.remaining === null ? p.elapsed % p.length : p.elapsed) / p.length) : 0;
-    return { name, times, fraction, phase };
+    const into = p.remaining === null ? p.elapsed % Math.max(p.length, 0.001) : p.elapsed;
+    const fraction = p.length > 0 ? Math.min(1, into / p.length) : 0;
+    return { name, times, fraction };
   });
 
   // ---- Rows ----
@@ -127,6 +131,8 @@
   const togglePause = () => act(transport.togglePause);
   const backToTop = () => act(() => transport.setStandby(0));
   const restart = () => act(transport.restart);
+  // The slider sends every move; the engine ramps 20 ms per change so it never clicks.
+  const setMaster = (v: number) => act(() => transport.setMaster(v));
 
   function openJump() {
     jumpValue = null;
@@ -209,6 +215,11 @@
     <button type="button" class="btn" onclick={onClose}>Library</button>
     <h1 class="show-head__name show-head__title">{show.name}</h1>
     {#if show.source}<span class="btn show-head__code" title="ThornCue Web show code">{show.source.code}</span>{/if}
+    <label class="master" for="master-vol">Master
+      <input type="range" id="master-vol" min="0" max="1" step="0.01" value={snap?.master ?? 1}
+        oninput={(e) => setMaster(Number(e.currentTarget.value))} />
+      <output class="num" for="master-vol">{Math.round((snap?.master ?? 1) * 100)}%</output>
+    </label>
     {#if snap && snap.decoded_bytes > 0}<span class="muted num" title="Decoded audio held in memory">{fmtBytes(snap.decoded_bytes)} in memory</span>{/if}
     <button type="button" class="btn" aria-keyshortcuts="?" onclick={() => shortcutsDialog.showModal()}>Shortcuts</button>
   </header>

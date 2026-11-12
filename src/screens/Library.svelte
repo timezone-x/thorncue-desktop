@@ -8,7 +8,7 @@
   import { showToast } from "../lib/toast.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
 
-  let { onOpen }: { onOpen: (id: string) => void } = $props();
+  let { onOpen, onWeb }: { onOpen: (id: string) => void; onWeb: () => void } = $props();
 
   let shows = $state<ShowSummary[] | null>(null);
   let confirmDelete = $state<ShowSummary | null>(null);
@@ -55,6 +55,7 @@
 <main class="page page--wide">
   <div class="page-head">
     <h1>Library</h1>
+    <button type="button" class="btn" onclick={onWeb}>Import from the web…</button>
     <button type="button" class="btn btn--primary" onclick={pickFile}>Import file…</button>
   </div>
 

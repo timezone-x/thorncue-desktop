@@ -10,8 +10,9 @@
   import Library from "./screens/Library.svelte";
   import Settings from "./screens/Settings.svelte";
   import Show from "./screens/Show.svelte";
+  import WebShows from "./screens/WebShows.svelte";
 
-  type Screen = "library" | "settings" | "show";
+  type Screen = "library" | "web" | "settings" | "show";
   let screen = $state<Screen>("library");
   let show = $state<ShowView | null>(null);
   let dragging = $state(false);
@@ -86,11 +87,15 @@
     <span class="site-nav__brand">ThornCue</span>
     <a href="#library" aria-current={screen === "library" ? "page" : undefined}
       onclick={(e) => { e.preventDefault(); go("library"); }}>Library</a>
+    <a href="#web" aria-current={screen === "web" ? "page" : undefined}
+      onclick={(e) => { e.preventDefault(); go("web"); }}>ThornCue Web</a>
     <a href="#settings" aria-current={screen === "settings" ? "page" : undefined}
       onclick={(e) => { e.preventDefault(); go("settings"); }}>Settings</a>
   </nav>
   {#if screen === "library"}
-    <Library onOpen={openShow} />
+    <Library onOpen={openShow} onWeb={() => go("web")} />
+  {:else if screen === "web"}
+    <WebShows onOpen={openShow} onSettings={() => go("settings")} />
   {:else}
     <Settings />
   {/if}

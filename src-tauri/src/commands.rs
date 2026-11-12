@@ -22,7 +22,7 @@ fn busy() -> String {
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    Ok(state.settings.lock().map_err(|_| busy())?.clone())
+    Ok(state.settings.lock().map_err(|_| busy())?.for_ui())
 }
 
 #[tauri::command]
@@ -41,7 +41,28 @@ pub fn set_theme(
         tracing::error!("saving settings: {e:#}");
         "Couldn't save your settings. Check there is free disk space.".to_string()
     })?;
-    Ok(s.clone())
+    Ok(s.for_ui())
+}
+
+/// GO lockout (ms) and Stop-all fade (s). Clamped to sensible ranges; applied at once.
+#[tauri::command]
+pub fn set_audio_options(
+    go_lockout_ms: u64,
+    stop_fade: f64,
+    state: State<'_, AppState>,
+) -> Result<Settings, String> {
+    let mut s = state.settings.lock().map_err(|_| busy())?;
+    let mut next = s.clone();
+    next.go_lockout_ms = go_lockout_ms;
+    next.stop_fade = stop_fade;
+    let next = next.sanitised();
+    next.save(&state.settings_path).map_err(|e| {
+        tracing::error!("saving settings: {e:#}");
+        "Couldn't save your settings. Check there is free disk space.".to_string()
+    })?;
+    *s = next;
+    send(&state, Command::SetOptions(s.engine_options()))?;
+    Ok(s.for_ui())
 }
 
 /// The page calls this once it has painted, so the window never shows unstyled.
@@ -258,6 +279,15 @@ pub fn move_standby(delta: i32, state: State<'_, AppState>) -> Result<(), String
 #[tauri::command]
 pub fn jump(number: usize, state: State<'_, AppState>) -> Result<(), String> {
     send(&state, Command::JumpAndPlay(number.saturating_sub(1)))
+}
+
+/// Master volume, 0..=1. A playback setting, not part of the show (and not saved, as the web).
+#[tauri::command]
+pub fn set_master(volume: f64, state: State<'_, AppState>) -> Result<(), String> {
+    if !volume.is_finite() {
+        return Err("That isn't a volume.".into());
+    }
+    send(&state, Command::SetMaster(volume.clamp(0.0, 1.0)))
 }
 
 #[tauri::command]

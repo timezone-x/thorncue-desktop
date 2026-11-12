@@ -6,6 +6,10 @@ mod fsutil;
 mod library;
 mod playback;
 mod settings;
+mod web;
+mod web_cmds;
+#[cfg(test)]
+mod web_tests;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -24,6 +28,8 @@ pub struct AppState {
     pub open_show: Mutex<Option<LoadedShow>>,
     /// Its folder, shared with the thread that saves standby.
     pub open_dir: playback::OpenShowDir,
+    /// Downloads in progress (`<app_data_dir>/tmp`).
+    pub tmp_dir: PathBuf,
     pub engine: engine::Engine,
 }
 
@@ -43,16 +49,25 @@ pub fn run() {
             let settings_path = settings::settings_path(&config_dir);
             let settings = Settings::load(&settings_path);
             let init = settings::theme_init_script(&settings);
+            let settings = settings.sanitised();
             let library = Library::new(&data_dir)?;
+            let tmp_dir = data_dir.join("tmp");
+            // Anything left here is from a download that was interrupted.
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            std::fs::create_dir_all(&tmp_dir)?;
             tracing::info!("library at {}", library.root().display());
             let open_dir = playback::OpenShowDir::default();
             let engine = playback::start_engine(app.handle().clone(), open_dir.clone());
+            if let Err(e) = engine.send(engine::Command::SetOptions(settings.engine_options())) {
+                tracing::error!("sending options to the engine: {e}");
+            }
             app.manage(AppState {
                 settings_path,
                 settings: Mutex::new(settings),
                 library,
                 open_show: Mutex::new(None),
                 open_dir,
+                tmp_dir,
                 engine,
             });
 
@@ -89,6 +104,16 @@ pub fn run() {
             commands::move_standby,
             commands::jump,
             commands::restart_engine,
+            commands::set_master,
+            commands::set_audio_options,
+            web_cmds::web_connection,
+            web_cmds::web_connect,
+            web_cmds::web_check,
+            web_cmds::web_disconnect,
+            web_cmds::web_list,
+            web_cmds::web_link_info,
+            web_cmds::web_import,
+            web_cmds::web_import_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ThornCue");

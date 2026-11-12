@@ -7,6 +7,8 @@ export type ThemeMode = "dark" | "light" | "system";
 export interface Settings {
   theme_family: ThemeFamily;
   theme_mode: ThemeMode;
+  go_lockout_ms: number;
+  stop_fade: number;
 }
 
 export interface ShowSummary {
@@ -83,6 +85,8 @@ export function errorText(e: unknown): string {
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setTheme: (family: ThemeFamily, mode: ThemeMode) => invoke<Settings>("set_theme", { family, mode }),
+  setAudioOptions: (goLockoutMs: number, stopFade: number) =>
+    invoke<Settings>("set_audio_options", { goLockoutMs, stopFade }),
   appReady: () => invoke<void>("app_ready"),
   listShows: () => invoke<ShowSummary[]>("list_shows"),
   importFile: (path: string) => invoke<ImportResult>("import_file", { path }),
@@ -117,6 +121,7 @@ export interface EngineSnapshot {
   prep_done: number;
   prep_total: number;
   decoded_bytes: number;
+  master: number;
 }
 
 export interface Position {
@@ -125,6 +130,7 @@ export interface Position {
   elapsed: number;
   remaining: number | null;
   length: number;
+  control: boolean;
 }
 
 export interface Notice {
@@ -142,4 +148,53 @@ export const transport = {
   moveStandby: (delta: number) => invoke<void>("move_standby", { delta }),
   jump: (number: number) => invoke<void>("jump", { number }),
   restart: () => invoke<void>("restart_engine"),
+  setMaster: (volume: number) => invoke<void>("set_master", { volume }),
+};
+
+// ---- ThornCue Web (src-tauri/src/web_cmds.rs) ----
+
+export interface WebConnection {
+  server: string | null;
+  insecure: boolean;
+  has_token: boolean;
+  token_store: "keychain" | "settings_file" | null;
+  username: string | null;
+}
+
+export type LocalStatus = "not_imported" | "imported" | "update_available" | "changed_both";
+
+export interface WebShow {
+  code: string;
+  name: string;
+  author: string;
+  owner: string | null;
+  role: string | null;
+  cue_count: number;
+  audio_bytes: number;
+  revision: string;
+  updated_at: string;
+}
+
+export interface WebShowRow extends WebShow {
+  status: LocalStatus;
+  local_id: string | null;
+  local_count: number;
+}
+
+export interface LinkInfo extends WebShow {
+  server: string;
+  insecure: boolean;
+  status: LocalStatus;
+  local_id: string | null;
+}
+
+export const webApi = {
+  connection: () => invoke<WebConnection>("web_connection"),
+  connect: (server: string, token: string) => invoke<WebConnection>("web_connect", { server, token }),
+  check: () => invoke<WebConnection>("web_check"),
+  disconnect: () => invoke<WebConnection>("web_disconnect"),
+  list: () => invoke<WebShowRow[]>("web_list"),
+  linkInfo: (link: string) => invoke<LinkInfo>("web_link_info", { link }),
+  importShow: (code: string, replaceId: string | null) => invoke<ImportResult>("web_import", { code, replaceId }),
+  importLink: (link: string, replaceId: string | null) => invoke<ImportResult>("web_import_link", { link, replaceId }),
 };
