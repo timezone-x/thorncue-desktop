@@ -336,3 +336,18 @@ fn destination_that_exists_is_not_overwritten() {
     );
     assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn detect_kind_tells_shows_from_web_exports() {
+    use tqs::PackageKind;
+    let f = fixtures();
+    assert_eq!(
+        tqs::detect_kind(&f.join("valid/02-all-features.tqs")).unwrap(),
+        PackageKind::Show
+    );
+    assert_eq!(
+        tqs::detect_kind(&f.join("legacy/web-export-STAGE-4821.zip")).unwrap(),
+        PackageKind::LegacyWebExport
+    );
+    assert!(tqs::detect_kind(&f.join("invalid/not-a-zip.tqs")).is_err());
+}

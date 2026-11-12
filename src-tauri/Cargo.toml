@@ -24,3 +24,6 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 anyhow = "1.0.104"
 tempfile.workspace = true
+tqs = { path = "../crates/tqs" }
+uuid = { version = "1.29.2", features = ["v4"] }
+trash = "5.3.0"

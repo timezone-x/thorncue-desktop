@@ -19,7 +19,7 @@ pub use manifest::{
     AUDIO_EXTS, Asset, Continue, Cue, CueType, FORMAT, FORMAT_VERSION, Generator, Manifest, Show,
     Source, normalise_cuts,
 };
-pub use read::{Progress, read_package, read_package_with_progress};
+pub use read::{PackageKind, Progress, detect_kind, read_package, read_package_with_progress};
 pub use time::now_rfc3339;
 pub use write::{write_package, write_package_with_progress};
 

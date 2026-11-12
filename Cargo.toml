@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/timezone-x/thorncue-desktop"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

@@ -184,3 +184,35 @@ pub(crate) fn move_into_place(tmp: tempfile::TempDir, dest_dir: &Path) -> Result
     }
     Ok(())
 }
+
+/// What kind of file the user handed us, from its zip listing alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageKind {
+    /// A `.tqs` (has `manifest.json` at the root).
+    Show,
+    /// ThornCue Web's old Export ZIP (has `show.json` at the root or one folder down).
+    LegacyWebExport,
+}
+
+/// Look at the zip's file names (nothing is extracted) to decide how to import it.
+pub fn detect_kind(path: &Path) -> Result<PackageKind> {
+    let file = File::open(path).map_err(TqsError::io("open", path))?;
+    let zip = zipcheck::open(BufReader::new(file))?;
+    let mut legacy = false;
+    for name in zip.file_names() {
+        let Ok(name) = name else { continue };
+        if name == "manifest.json" {
+            return Ok(PackageKind::Show);
+        }
+        if name == "show.json" || (name.ends_with("/show.json") && name.matches('/').count() == 1) {
+            legacy = true;
+        }
+    }
+    if legacy {
+        Ok(PackageKind::LegacyWebExport)
+    } else {
+        Err(TqsError::invalid(
+            "This zip isn't a ThornCue show or web export (it has no manifest.json or show.json).",
+        ))
+    }
+}
