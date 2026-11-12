@@ -547,3 +547,6 @@ div.error-list { margin-top: 0; }
 /* Radios sit inline like checkboxes (the global input rule would make them full width). */
 input[type=radio] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--select-button); }
 .theme-card .check { font-weight: 600; }
+.cue-table td.c-grip { cursor: grab; touch-action: none; user-select: none; }
+.cue-row.is-dragging td.c-grip { cursor: grabbing; }
+.save-state:empty { display: none; }

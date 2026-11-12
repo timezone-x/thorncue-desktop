@@ -31,7 +31,10 @@ pub type ManagerFactory<B> = Box<dyn FnMut() -> Result<AudioManager<B>, String> 
 /// Everything the UI can ask for. Commands are intents; the engine decides what they mean.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// A different show: everything stops and its audio is prepared from scratch.
     LoadShow(ShowPlan),
+    /// The same show, edited: playback carries on (see `Core::update_plan`).
+    UpdatePlan(ShowPlan),
     /// Fire standby and move standby on.
     Go,
     /// Stop everything and cancel every pending start. `panic` skips any stop fade.
@@ -84,8 +87,12 @@ pub(crate) fn amplitude_to_db(a: f64) -> Decibels {
 struct Asset {
     path: PathBuf,
     state: PrepState,
+    /// The decoded file, kept so a changed edit only needs rendering, not decoding.
+    raw: Option<StaticSoundData>,
     /// Edited audio for each edit of this file in the show (`None` = length 0).
     edits: HashMap<EditKey, Option<StaticSoundData>>,
+    /// Edits submitted to the prep pool and not back yet.
+    in_flight: Vec<EditKey>,
     /// Bytes held in memory (decoded source plus rendered cuts).
     bytes: u64,
 }
@@ -141,6 +148,7 @@ pub struct Core<B: EngineBackend> {
     /// Cue index -> asset index (cues sharing a file share one decode).
     cue_asset: Vec<Option<usize>>,
     assets: Vec<Asset>,
+    by_path: HashMap<PathBuf, usize>,
     generation: u64,
     prep: PrepPool,
 
@@ -187,6 +195,7 @@ impl<B: EngineBackend> Core<B> {
             plan: ShowPlan::default(),
             cue_asset: Vec::new(),
             assets: Vec::new(),
+            by_path: HashMap::new(),
             generation: 0,
             prep: PrepPool::new(2, loader),
             standby: 0,
@@ -286,6 +295,7 @@ impl<B: EngineBackend> Core<B> {
     pub fn handle(&mut self, cmd: Command) {
         match cmd {
             Command::LoadShow(plan) => self.load_show(plan),
+            Command::UpdatePlan(plan) => self.update_plan(plan),
             Command::Go => self.go(),
             Command::StopAll { panic } => self.stop_all(panic),
             Command::TogglePause => self.toggle_pause(),
@@ -354,9 +364,78 @@ impl<B: EngineBackend> Core<B> {
         self.set_paused(false);
         self.generation += 1;
         self.prep.set_generation(self.generation);
-
-        let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
         self.assets.clear();
+        self.by_path.clear();
+        self.standby = plan.standby.min(plan.cues.len());
+        self.attach_plan(plan);
+    }
+
+    /// The show was edited (FORMAT.md fields, order, cues added or removed). Unlike
+    /// `LoadShow`, nothing stops: running cues carry on (matched by id), standby stays on the
+    /// same cue (web keepStandby), a playing cue's volume changes live, and only new files
+    /// and new edits are prepared.
+    fn update_plan(&mut self, plan: ShowPlan) {
+        let standby_id = self.plan.cues.get(self.standby).map(|c| c.id.clone());
+        let old_standby = self.standby;
+        let ids: Vec<String> = self.plan.cues.iter().map(|c| c.id.clone()).collect();
+        let new_index: HashMap<&str, usize> = plan
+            .cues
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id.as_str(), i))
+            .collect();
+        let remap = |i: usize| {
+            ids.get(i)
+                .and_then(|id| new_index.get(id.as_str()).copied())
+        };
+
+        // Running and pending cues follow their id; a deleted cue stops.
+        let mut keep = Vec::with_capacity(self.running.len());
+        let mut gone = Vec::new();
+        for mut r in std::mem::take(&mut self.running) {
+            match remap(r.index()) {
+                Some(n) => {
+                    match &mut r {
+                        Running::Audio { index, .. } | Running::Timer { index, .. } => *index = n,
+                    }
+                    keep.push(r);
+                }
+                None => gone.push(r),
+            }
+        }
+        for r in gone {
+            self.retire(r);
+        }
+        self.running = keep;
+        self.pending = std::mem::take(&mut self.pending)
+            .into_iter()
+            .filter_map(|p| remap(p.index).map(|index| PendingStart { index }))
+            .collect();
+
+        let len = plan.cues.len();
+        self.standby = standby_id
+            .and_then(|id| new_index.get(id.as_str()).copied())
+            .unwrap_or(old_standby.min(len));
+
+        // Live volume (as the web): a playing cue whose volume changed follows at once.
+        for r in &self.running {
+            if let Running::Audio {
+                index,
+                gain,
+                stopped: false,
+                ..
+            } = r
+            {
+                gain.set_volume(plan.cues[*index].volume);
+            }
+        }
+        self.attach_plan(plan);
+    }
+
+    /// Take `plan` as the cue list and make sure every file and edit it plays is prepared,
+    /// standby first, then outward.
+    fn attach_plan(&mut self, plan: ShowPlan) {
+        let mut fresh = Vec::new();
         self.cue_asset = plan
             .cues
             .iter()
@@ -365,51 +444,94 @@ impl<B: EngineBackend> Core<B> {
                     return None;
                 }
                 let path = c.audio.clone()?;
-                Some(*by_path.entry(path.clone()).or_insert_with(|| {
-                    self.assets.push(Asset {
-                        path,
-                        state: PrepState::Pending,
-                        edits: HashMap::new(),
-                        bytes: 0,
-                    });
-                    self.assets.len() - 1
-                }))
+                if let Some(&a) = self.by_path.get(&path) {
+                    return Some(a);
+                }
+                self.assets.push(Asset {
+                    path: path.clone(),
+                    state: PrepState::Pending,
+                    raw: None,
+                    edits: HashMap::new(),
+                    in_flight: Vec::new(),
+                    bytes: 0,
+                });
+                let a = self.assets.len() - 1;
+                self.by_path.insert(path, a);
+                fresh.push(a);
+                Some(a)
             })
             .collect();
-        self.standby = plan.standby.min(plan.cues.len());
+        self.standby = self.standby.min(plan.cues.len());
         self.plan = plan;
 
-        // Every edit each file needs.
-        let mut edits: Vec<Vec<EditKey>> = vec![Vec::new(); self.assets.len()];
-        for i in 0..self.plan.cues.len() {
-            if let Some(a) = self.cue_asset[i] {
-                let k = self.edit_key(i);
-                if !edits[a].contains(&k) {
-                    edits[a].push(k);
-                }
-            }
-        }
-        // Standby cue first, then outward in show order.
         let mut order: Vec<usize> = (0..self.plan.cues.len()).collect();
         let s = self.standby as i64;
         order.sort_by_key(|&i| {
             let d = i as i64 - s;
             if d >= 0 { 2 * d } else { -2 * d - 1 }
         });
-        let mut queued = vec![false; self.assets.len()];
+        let mut seen = vec![false; self.assets.len()];
         for i in order {
             if let Some(a) = self.cue_asset[i]
-                && !queued[a]
+                && !seen[a]
             {
-                queued[a] = true;
-                self.prep.submit(Job {
-                    generation: self.generation,
-                    asset: a,
-                    path: self.assets[a].path.clone(),
-                    edits: std::mem::take(&mut edits[a]),
-                });
+                seen[a] = true;
+                if fresh.contains(&a) {
+                    let edits = self.missing_edits(a);
+                    self.assets[a].in_flight = edits.clone();
+                    self.prep.submit(Job {
+                        generation: self.generation,
+                        asset: a,
+                        path: self.assets[a].path.clone(),
+                        edits,
+                        raw: None,
+                    });
+                } else {
+                    self.ensure_edits(a);
+                }
             }
         }
+    }
+
+    /// Edits of asset `a` the plan plays that are neither ready nor being made.
+    fn missing_edits(&self, a: usize) -> Vec<EditKey> {
+        let asset = &self.assets[a];
+        let mut out: Vec<EditKey> = Vec::new();
+        for i in 0..self.plan.cues.len() {
+            if self.cue_asset[i] == Some(a) {
+                let k = self.edit_key(i);
+                if !asset.edits.contains_key(&k)
+                    && !asset.in_flight.contains(&k)
+                    && !out.contains(&k)
+                {
+                    out.push(k);
+                }
+            }
+        }
+        out
+    }
+
+    /// Render edits a decoded file is missing (an edit changed). No-op while it's decoding:
+    /// `on_prep` calls this again when the decode lands.
+    fn ensure_edits(&mut self, a: usize) {
+        if self.assets[a].state != PrepState::Ready {
+            return;
+        }
+        let edits = self.missing_edits(a);
+        if edits.is_empty() {
+            return;
+        }
+        let Some(raw) = self.assets[a].raw.clone() else {
+            return;
+        };
+        self.assets[a].in_flight.extend(edits.iter().cloned());
+        self.prep.submit(Job {
+            generation: self.generation,
+            asset: a,
+            path: self.assets[a].path.clone(),
+            edits,
+            raw: Some(raw),
+        });
     }
 
     fn go(&mut self) {
@@ -491,7 +613,16 @@ impl<B: EngineBackend> Core<B> {
             return;
         };
         match &self.assets[a].state {
-            PrepState::Ready => self.play_now(i),
+            PrepState::Ready => {
+                if self.assets[a].edits.contains_key(&self.edit_key(i)) {
+                    self.play_now(i);
+                } else {
+                    // Its edit changed and is still rendering: start when it's ready (and,
+                    // like a decoding cue, never after Stop all).
+                    self.pending.push(PendingStart { index: i });
+                    self.ensure_edits(a);
+                }
+            }
             PrepState::Pending | PrepState::Decoding => {
                 self.pending.push(PendingStart { index: i })
             }
@@ -739,19 +870,29 @@ impl<B: EngineBackend> Core<B> {
                 self.dirty = true;
                 match *result {
                     Ok(decoded) => {
+                        let a = &mut self.assets[asset];
+                        a.state = PrepState::Ready;
+                        if a.raw.is_none() {
+                            a.raw = Some(decoded.raw);
+                        }
+                        for (k, d) in decoded.edits {
+                            a.in_flight.retain(|x| x != &k);
+                            a.edits.insert(k, d);
+                        }
                         let frame = std::mem::size_of::<kira::Frame>() as u64;
-                        let mut bytes = decoded.raw.frames.len() as u64 * frame;
-                        for (_, d) in &decoded.edits {
-                            if let Some(d) = d
-                                && !std::sync::Arc::ptr_eq(&d.frames, &decoded.raw.frames)
+                        let raw_frames = a.raw.as_ref().map(|r| r.frames.clone());
+                        let mut bytes = raw_frames.as_ref().map_or(0, |f| f.len() as u64 * frame);
+                        for d in a.edits.values().flatten() {
+                            if !raw_frames
+                                .as_ref()
+                                .is_some_and(|f| std::sync::Arc::ptr_eq(&d.frames, f))
                             {
                                 bytes += d.frames.len() as u64 * frame;
                             }
                         }
-                        let a = &mut self.assets[asset];
-                        a.state = PrepState::Ready;
-                        a.edits = decoded.edits.into_iter().collect();
                         a.bytes = bytes;
+                        // Edits added while it was decoding.
+                        self.ensure_edits(asset);
                     }
                     Err(e) if e == MISSING => self.assets[asset].state = PrepState::Missing,
                     Err(e) => {

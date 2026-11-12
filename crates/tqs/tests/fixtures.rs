@@ -243,6 +243,15 @@ fn write_then_read_round_trips_fixture_02() {
 
     let out = parent.path().join("Exported.tqs");
     let written = tqs::write_package(&first, &out).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "exports are readable by others"
+        );
+    }
     assert_eq!(written.generator.name, "thorncue-desktop");
 
     let second = parent.path().join("second");

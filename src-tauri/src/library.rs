@@ -80,6 +80,8 @@ pub struct LoadedShow {
     pub local: LocalState,
     /// When the backup had to be used: a sentence for the user.
     pub recovered: Option<String>,
+    /// Edited since the last save.
+    pub dirty: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -118,7 +120,10 @@ impl Library {
         };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with(".tqs-import-") || name.starts_with(".replace-") {
+            if name.starts_with(".tqs-import-")
+                || name.starts_with(".replace-")
+                || name.starts_with(".new-")
+            {
                 tracing::info!("removing an unfinished import: {}", e.path().display());
                 let _ = std::fs::remove_dir_all(e.path());
             } else if let Some(id) = name.strip_prefix(".old-") {
@@ -323,6 +328,61 @@ impl Library {
         Ok((id, manifest, warnings))
     }
 
+    /// A new, empty show. Returns its id.
+    pub fn create_show(&self, name: &str) -> Result<String> {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let tmp = self.root.join(format!(".new-{id}"));
+        std::fs::create_dir_all(tmp.join("audio"))?;
+        let m = crate::editing::empty_show(name);
+        atomic_write(&tmp.join("manifest.json"), &m.to_json_pretty())?;
+        write_local(&tmp, &LocalState::default())?;
+        std::fs::rename(&tmp, self.root.join(&id))?;
+        crate::fsutil::sync_dir(&self.root);
+        Ok(id)
+    }
+
+    /// Copy a show (its audio too) as a new show named "<name> copy". The copy is a new show,
+    /// so it no longer claims to be the web's: `source` is cleared. Returns the new id.
+    pub fn duplicate_show(&self, id: &str) -> Result<String> {
+        let src = self.show_dir(id)?;
+        let (mut manifest, _) = read_manifest_with_backup(&src)?;
+        let new_id = uuid::Uuid::new_v4().simple().to_string();
+        let tmp = self.root.join(format!(".new-{new_id}"));
+        let result = (|| -> Result<()> {
+            std::fs::create_dir_all(tmp.join("audio"))?;
+            for a in manifest.assets.values() {
+                std::fs::copy(src.join(&a.path), tmp.join(&a.path))
+                    .with_context(|| format!("copying {}", a.path))?;
+            }
+            manifest.show.name = format!("{} copy", manifest.show.name)
+                .chars()
+                .take(100)
+                .collect();
+            manifest.show.source = None;
+            atomic_write(&tmp.join("manifest.json"), &manifest.to_json_pretty())?;
+            write_local(&tmp, &LocalState::default())?;
+            std::fs::rename(&tmp, self.root.join(&new_id))?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+        crate::fsutil::sync_dir(&self.root);
+        Ok(new_id)
+    }
+
+    /// Make sure a show's manifest.json is readable (recovering it from .bak if not), e.g.
+    /// before exporting a show that isn't open. Returns the recovery sentence, if any.
+    pub fn ensure_readable(&self, id: &str) -> Result<Option<String>> {
+        let dir = self.show_dir(id)?;
+        let (manifest, recovered) = read_manifest_with_backup(&dir)?;
+        if recovered.is_some() {
+            repair(&dir, &manifest);
+        }
+        Ok(recovered)
+    }
+
     /// Move a show's folder to the OS trash.
     pub fn delete(&self, id: &str) -> Result<()> {
         let dir = self.show_dir(id)?;
@@ -342,6 +402,8 @@ impl Library {
             if let Err(e) = refresh_backup(&dir) {
                 tracing::warn!("couldn't refresh manifest.json.bak for {id}: {e:#}");
             }
+        } else {
+            repair(&dir, &manifest);
         }
         local.standby_index = local.standby_index.min(manifest.cues.len());
         local.last_opened = Some(tqs::now_rfc3339());
@@ -354,12 +416,13 @@ impl Library {
             manifest,
             local,
             recovered,
+            dirty: false,
         })
     }
 }
 
 /// A show name usable as a folder name on every OS.
-fn safe_file_name(name: &str) -> String {
+pub fn safe_file_name(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| {
@@ -384,6 +447,30 @@ fn revision_of(origin: &WebOrigin, manifest: &Manifest) -> Option<String> {
         .revision
         .clone()
         .or_else(|| manifest.show.source.as_ref().map(|s| s.revision.clone()))
+}
+
+/// Put a recovered manifest back as manifest.json. The damaged file is kept beside it as
+/// `manifest.json.damaged-<time>` (never delete what might be someone's work).
+fn repair(dir: &Path, manifest: &Manifest) {
+    let damaged = dir.join(format!(
+        "manifest.json.damaged-{}",
+        tqs::now_rfc3339().replace(':', "-")
+    ));
+    let main = dir.join("manifest.json");
+    if main.exists()
+        && let Err(e) = std::fs::rename(&main, &damaged)
+    {
+        tracing::warn!(
+            "couldn't set the damaged manifest aside in {}: {e}",
+            dir.display()
+        );
+    }
+    if let Err(e) = atomic_write(&main, &manifest.to_json_pretty()) {
+        tracing::warn!(
+            "couldn't write the recovered manifest in {}: {e:#}",
+            dir.display()
+        );
+    }
 }
 
 /// Read `manifest.json`; if it is missing or damaged, fall back to `.bak` and say so.
@@ -444,7 +531,18 @@ pub fn read_local(dir: &Path) -> LocalState {
 }
 
 pub fn write_local(dir: &Path, local: &LocalState) -> Result<()> {
+    let _guard = LOCAL_LOCK.lock();
     atomic_write(&dir.join("local.json"), &serde_json::to_vec_pretty(local)?)
+}
+
+/// Several threads touch local.json (standby saver, autosave): read-modify-write under one lock.
+static LOCAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn update_local(dir: &Path, f: impl FnOnce(&mut LocalState)) -> Result<()> {
+    let _guard = LOCAL_LOCK.lock();
+    let mut local = read_local(dir);
+    f(&mut local);
+    atomic_write(&dir.join("local.json"), &serde_json::to_vec_pretty(&local)?)
 }
 
 #[cfg(test)]
@@ -537,7 +635,8 @@ mod tests {
         let opened = lib.open(&id).unwrap();
         assert_eq!(opened.manifest, m);
         assert!(opened.recovered.unwrap().contains("last good copy"));
-        assert!(lib.list().unwrap()[0].damaged);
+        // Opening repaired it, so the Library no longer flags it.
+        assert!(!lib.list().unwrap()[0].damaged);
     }
 
     #[test]
@@ -555,5 +654,92 @@ mod tests {
         assert!(lib.show_dir("../etc").is_err());
         assert!(lib.show_dir("").is_err());
         assert!(lib.show_dir("0123abcdef").is_ok());
+    }
+
+    #[test]
+    fn build_from_scratch_export_and_reimport_gives_identical_cues() {
+        use crate::editing::{Edit, apply, copy_audio_in};
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        let id = lib.create_show("Untitled show").unwrap();
+        let dir = lib.show_dir(&id).unwrap();
+        let mut m = lib.open(&id).unwrap().manifest;
+        let a = copy_audio_in(&dir, &fixture("audio/tone-a440.wav")).unwrap();
+        let b = copy_audio_in(&dir, &fixture("audio/tone-c262.ogg")).unwrap();
+        m = apply(&m, Edit::AddAudio(vec![a, b])).unwrap().0;
+        m = apply(&m, Edit::AddControl { silence: true }).unwrap().0;
+        let first = m.cues[0].id.clone();
+        let patch = serde_json::json!({"volume": 0.75, "fade_in": 0.5, "continue": "after_end", "name": "Opening"});
+        m = apply(
+            &m,
+            Edit::Update {
+                id: first.clone(),
+                patch: patch.as_object().unwrap().clone(),
+            },
+        )
+        .unwrap()
+        .0;
+        m = apply(&m, Edit::Duplicate { id: first }).unwrap().0;
+        m = apply(&m, Edit::ShowName("Cinderella".into())).unwrap().0;
+        atomic_write(&dir.join("manifest.json"), &m.to_json_pretty()).unwrap();
+
+        // Reopen: nothing lost.
+        assert_eq!(lib.open(&id).unwrap().manifest, m);
+
+        let out = data.path().join("Cinderella.tqs");
+        tqs::write_package(&dir, &out).unwrap();
+        let (again, warnings, _) = {
+            let (id2, m2, w) = lib.import_file(&out, &mut |_| {}).unwrap();
+            (m2, w, id2)
+        };
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.cues, m.cues, "identical cues after export and import");
+        assert_eq!(again.show.name, "Cinderella");
+    }
+
+    #[test]
+    fn duplicate_show_copies_audio_and_drops_the_web_source() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        let (id, m, _) = lib
+            .import_file(&fixture("valid/05-from-web.tqs"), &mut |_| {})
+            .unwrap();
+        let copy = lib.duplicate_show(&id).unwrap();
+        let c = lib.open(&copy).unwrap().manifest;
+        assert_eq!(c.show.name, format!("{} copy", m.show.name));
+        assert!(c.show.source.is_none());
+        assert_eq!(c.cues, m.cues);
+        for a in c.assets.values() {
+            assert!(lib.show_dir(&copy).unwrap().join(&a.path).is_file());
+        }
+        assert!(
+            visible_entries(lib.root())
+                .iter()
+                .all(|n| !n.starts_with('.'))
+        );
+    }
+
+    #[test]
+    fn a_hand_corrupted_manifest_opens_from_the_backup_and_says_so() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        let id = lib.create_show("Kept").unwrap();
+        lib.open(&id).unwrap(); // refreshes .bak
+        std::fs::write(
+            lib.show_dir(&id).unwrap().join("manifest.json"),
+            "{\"format\": \"thorncue.show\", oops",
+        )
+        .unwrap();
+        let opened = lib.open(&id).unwrap();
+        assert_eq!(opened.manifest.show.name, "Kept");
+        assert!(opened.recovered.unwrap().contains("\"Kept\" was damaged"));
+        // Repaired on disk; the damaged file is kept beside it.
+        assert!(lib.open(&id).unwrap().recovered.is_none());
+        let dir = lib.show_dir(&id).unwrap();
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("manifest.json.damaged-")
+        }));
     }
 }

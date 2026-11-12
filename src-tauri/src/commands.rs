@@ -183,7 +183,7 @@ pub struct ShowView {
     pub recovered: Option<String>,
 }
 
-fn view(s: &crate::library::LoadedShow) -> ShowView {
+pub(crate) fn view(s: &crate::library::LoadedShow) -> ShowView {
     ShowView {
         id: s.id.clone(),
         name: s.manifest.show.name.clone(),
@@ -197,7 +197,13 @@ fn view(s: &crate::library::LoadedShow) -> ShowView {
 }
 
 #[tauri::command]
-pub fn open_show(id: String, state: State<'_, AppState>) -> Result<ShowView, String> {
+pub fn open_show(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ShowView, String> {
+    // Switching shows: save the one that's open first.
+    crate::saver::save_now(&app)?;
     let loaded = state.library.open(&id).map_err(|e| {
         tracing::error!("opening show {id}: {e:#}");
         "This show can't be opened: its files are damaged and there is no good backup. Import it again.".to_string()
@@ -211,7 +217,8 @@ pub fn open_show(id: String, state: State<'_, AppState>) -> Result<ShowView, Str
 }
 
 #[tauri::command]
-pub fn close_show(state: State<'_, AppState>) -> Result<(), String> {
+pub fn close_show(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    crate::saver::save_now(&app)?;
     // Closing a show stops it.
     send(&state, Command::LoadShow(engine::ShowPlan::default()))?;
     *state.open_dir.lock().map_err(|_| busy())? = None;

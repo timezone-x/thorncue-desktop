@@ -22,6 +22,8 @@ pub(crate) struct Job {
     pub path: PathBuf,
     /// Every edit of this file the show's cues play.
     pub edits: Vec<EditKey>,
+    /// Already decoded (an edit changed): skip decoding and only render `edits`.
+    pub raw: Option<StaticSoundData>,
 }
 
 /// A decoded file and each edit of it. An edit maps to `None` when it leaves nothing.
@@ -73,8 +75,13 @@ impl PrepPool {
                                 asset: job.asset,
                             });
                             let t = std::time::Instant::now();
-                            let result = if job.path.is_file() {
-                                loader(&job.path).map(|raw| {
+                            let decoded = match job.raw {
+                                Some(raw) => Ok(raw),
+                                None if job.path.is_file() => loader(&job.path),
+                                None => Err(MISSING.into()),
+                            };
+                            let result = {
+                                decoded.map(|raw| {
                                     let edits = job
                                         .edits
                                         .iter()
@@ -82,8 +89,6 @@ impl PrepPool {
                                         .collect();
                                     Decoded { raw, edits }
                                 })
-                            } else {
-                                Err(MISSING.into())
                             };
                             tracing::debug!("decoded {} in {:?}", job.path.display(), t.elapsed());
                             let _ = res_tx.send(PrepMsg::Finished {

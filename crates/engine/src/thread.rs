@@ -96,11 +96,16 @@ impl Engine {
         }
     }
 
-    /// Send a command. Refused while Restart audio engine is in progress, except Stop all
-    /// (which always wins, and has nothing left to stop by then).
+    /// Send a command. Playback commands are refused while Restart audio engine is in
+    /// progress; Stop all always goes through (it always wins, and has nothing left to stop).
     pub fn send(&self, cmd: Command) -> Result<(), EngineError> {
-        let is_stop = matches!(cmd, Command::StopAll { .. });
-        if self.shared.restarting.load(Ordering::Acquire) && !is_stop {
+        // During a restart only playback is refused. Edits, standby moves and settings still
+        // go through, so the engine's copy of the show never falls behind the app's.
+        let playback = matches!(
+            cmd,
+            Command::Go | Command::JumpAndPlay(_) | Command::TogglePause | Command::RestartAudio
+        );
+        if self.shared.restarting.load(Ordering::Acquire) && playback {
             return Err(EngineError::Restarting);
         }
         if matches!(cmd, Command::RestartAudio) {
