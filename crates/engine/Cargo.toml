@@ -1,0 +1,18 @@
+[package]
+name = "engine"
+description = "ThornCue cue engine on kira"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+crossbeam-channel = "0.5.17"
+# Default features (cpal output, mp3/ogg/flac/wav) plus M4A and AIFF.
+kira = { version = "0.12.6", features = ["aac", "isomp4", "aiff"] }
+
+[dev-dependencies]
+serde_json.workspace = true
