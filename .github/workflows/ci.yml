@@ -1,7 +1,10 @@
 name: CI
 
+# One check per pull request, one after it merges. Branch pushes are covered by
+# their pull request, and tags are built by release.yml.
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
