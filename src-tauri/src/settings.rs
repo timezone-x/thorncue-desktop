@@ -21,6 +21,12 @@ pub struct Settings {
     pub go_lockout_ms: u64,
     /// Stop all fades over this many seconds (0 = instant).
     pub stop_fade: f64,
+    /// ThornCue Web server, as `ServerUrl` normalised it.
+    pub web_server: Option<String>,
+    /// The API token, only when the OS keychain isn't available (this file is written 0600).
+    /// Never sent to the webview: see `for_ui`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_token_fallback: Option<String>,
     /// Fields written by a newer ThornCue are kept on save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -33,6 +39,8 @@ impl Default for Settings {
             theme_mode: "dark".into(),
             go_lockout_ms: 0,
             stop_fade: 0.0,
+            web_server: None,
+            web_token_fallback: None,
             extra: Default::default(),
         }
     }
@@ -61,6 +69,14 @@ impl Settings {
         };
         s.sanitise();
         s
+    }
+
+    /// What the webview may see: never the token.
+    pub fn for_ui(&self) -> Settings {
+        Settings {
+            web_token_fallback: None,
+            ..self.clone()
+        }
     }
 
     pub fn sanitised(mut self) -> Self {
@@ -138,6 +154,25 @@ mod tests {
         s.save(&p).unwrap();
         let again: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(again["x_future"], 1);
+        // settings.json may hold a token: only this user can read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn the_token_never_goes_to_the_webview() {
+        let s = Settings {
+            web_token_fallback: Some("tc_secret".into()),
+            ..Settings::default()
+        };
+        let v = serde_json::to_string(&s.for_ui()).unwrap();
+        assert!(!v.contains("tc_secret"));
     }
 
     #[test]

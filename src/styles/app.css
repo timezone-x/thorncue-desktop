@@ -539,3 +539,11 @@ div.error-list { padding-left: 12px; }
 .device-alert { margin: 8px 16px 0; max-width: none; }
 .np-bar { height: 6px; border-radius: 3px; background: var(--wave-off); overflow: hidden; }
 .np-bar__fill { height: 100%; background: var(--go-text); }
+.web-intro { margin-bottom: 12px; }
+.web-status { margin-bottom: 12px; }
+div.error-list { margin-top: 0; }
+.status-cell { white-space: nowrap; }
+.page-head .muted { margin-right: auto; }
+/* Radios sit inline like checkboxes (the global input rule would make them full width). */
+input[type=radio] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--select-button); }
+.theme-card .check { font-weight: 600; }

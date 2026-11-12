@@ -27,8 +27,21 @@ pub struct LocalState {
     pub imported_at: Option<String>,
     pub imported_revision: Option<String>,
     pub modified_since_import: bool,
+    /// The server and show code this copy was downloaded from, as the operator reached it
+    /// (a LAN address can differ from the public URL in the manifest's `source`).
+    pub web_server: Option<String>,
+    pub web_code: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Where a downloaded package came from.
+#[derive(Debug, Clone)]
+pub struct WebOrigin {
+    pub server: String,
+    pub code: String,
+    /// The revision downloaded (the response ETag), compared with the web's list.
+    pub revision: Option<String>,
 }
 
 /// One row of the Library table.
@@ -44,6 +57,12 @@ pub struct ShowSummary {
     pub imported_at: Option<String>,
     /// Set when `manifest.json` couldn't be read and the backup was used.
     pub damaged: bool,
+    /// The web revision this copy was imported at.
+    pub imported_revision: Option<String>,
+    pub web_server: Option<String>,
+    pub web_code: Option<String>,
+    /// Edited here since it was imported.
+    pub modified_since_import: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +80,18 @@ pub struct LoadedShow {
     pub local: LocalState,
     /// When the backup had to be used: a sentence for the user.
     pub recovered: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReplaceError {
+    #[error("That show is no longer in your library.")]
+    NoSuchShow,
+    #[error("{0}")]
+    Package(tqs::TqsError),
+    #[error(
+        "Couldn't swap in the new copy. Your existing show is unchanged. Check there is free disk space."
+    )]
+    Disk,
 }
 
 pub struct Library {
@@ -86,12 +117,131 @@ impl Library {
             return;
         };
         for e in entries.flatten() {
-            let name = e.file_name();
-            if name.to_string_lossy().starts_with(".tqs-import-") {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(".tqs-import-") || name.starts_with(".replace-") {
                 tracing::info!("removing an unfinished import: {}", e.path().display());
                 let _ = std::fs::remove_dir_all(e.path());
+            } else if let Some(id) = name.strip_prefix(".old-") {
+                // A Replace was interrupted between its two renames: if the new copy didn't
+                // make it into place, put the old one back; otherwise it goes to the trash.
+                let live = self.root.join(id);
+                if live.exists() {
+                    if let Err(err) = trash::delete(e.path()) {
+                        tracing::warn!("couldn't trash {}: {err}", e.path().display());
+                    }
+                } else {
+                    tracing::warn!("restoring {id} after an interrupted replace");
+                    let _ = std::fs::rename(e.path(), live);
+                }
             }
         }
+    }
+
+    /// Library shows imported from `server` + `code` (matching spellings of the server).
+    pub fn find_by_source(&self, server: &str, code: &str) -> Vec<ShowSummary> {
+        self.list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| {
+                let by_manifest = s.source.as_ref().is_some_and(|src| {
+                    src.code == code && crate::web::ServerUrl::same_server(&src.server, server)
+                });
+                let by_download = s.web_code.as_deref() == Some(code)
+                    && s.web_server
+                        .as_deref()
+                        .is_some_and(|w| crate::web::ServerUrl::same_server(w, server));
+                by_manifest || by_download
+            })
+            .collect()
+    }
+
+    /// Import a downloaded `.tqs` as a new show.
+    pub fn import_package(
+        &self,
+        file: &Path,
+        origin: &WebOrigin,
+        on_progress: &mut dyn FnMut(Progress),
+    ) -> std::result::Result<(String, Manifest, Vec<Warning>), tqs::TqsError> {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let dest = self.root.join(&id);
+        let (manifest, warnings) =
+            tqs::read_package_with_progress(file, &dest, Limits::default(), on_progress)?;
+        let local = LocalState {
+            imported_at: Some(tqs::now_rfc3339()),
+            imported_revision: revision_of(origin, &manifest),
+            web_server: Some(origin.server.clone()),
+            web_code: Some(origin.code.clone()),
+            ..Default::default()
+        };
+        if let Err(e) = write_local(&dest, &local) {
+            tracing::warn!("couldn't write local.json for {id}: {e:#}");
+        }
+        Ok((id, manifest, warnings))
+    }
+
+    /// Replace show `id`'s content with a downloaded `.tqs`, keeping its id, standby and last
+    /// opened. The old content goes to the OS trash. Nothing changes if the package is refused.
+    pub fn replace_with_package(
+        &self,
+        id: &str,
+        file: &Path,
+        origin: &WebOrigin,
+        on_progress: &mut dyn FnMut(Progress),
+    ) -> std::result::Result<(Manifest, Vec<Warning>), ReplaceError> {
+        let live = self.show_dir(id).map_err(|_| ReplaceError::NoSuchShow)?;
+        if !live.is_dir() {
+            return Err(ReplaceError::NoSuchShow);
+        }
+        let incoming = self
+            .root
+            .join(format!(".replace-{}", uuid::Uuid::new_v4().simple()));
+        let (manifest, warnings) =
+            tqs::read_package_with_progress(file, &incoming, Limits::default(), on_progress)
+                .map_err(ReplaceError::Package)?;
+        let old_local = read_local(&live);
+        let old = self.root.join(format!(".old-{id}"));
+        let swap = || -> Result<()> {
+            std::fs::rename(&live, &old).context("moving the old copy aside")?;
+            if let Err(e) = std::fs::rename(&incoming, &live) {
+                let _ = std::fs::rename(&old, &live);
+                return Err(e).context("moving the new copy into place");
+            }
+            Ok(())
+        };
+        if let Err(e) = swap() {
+            let _ = std::fs::remove_dir_all(&incoming);
+            tracing::error!("replacing {id}: {e:#}");
+            return Err(ReplaceError::Disk);
+        }
+        crate::fsutil::sync_dir(&self.root);
+        let local = LocalState {
+            standby_index: old_local.standby_index.min(manifest.cues.len()),
+            last_opened: old_local.last_opened,
+            imported_at: Some(tqs::now_rfc3339()),
+            imported_revision: revision_of(origin, &manifest),
+            modified_since_import: false,
+            web_server: Some(origin.server.clone()),
+            web_code: Some(origin.code.clone()),
+            extra: old_local.extra,
+        };
+        if let Err(e) = write_local(&live, &local) {
+            tracing::warn!("couldn't write local.json for {id}: {e:#}");
+        }
+        // Give the old copy a name an operator can find in the trash (a leading dot hides it).
+        let readable = self.root.join(format!(
+            "{} (replaced {})",
+            safe_file_name(&manifest.show.name),
+            tqs::now_rfc3339().replace(':', "-").trim_end_matches('Z')
+        ));
+        let to_trash = if std::fs::rename(&old, &readable).is_ok() {
+            readable
+        } else {
+            old
+        };
+        if let Err(e) = trash::delete(&to_trash) {
+            tracing::warn!("couldn't move the old copy of {id} to the trash: {e}");
+        }
+        Ok((manifest, warnings))
     }
 
     pub fn show_dir(&self, id: &str) -> Result<PathBuf> {
@@ -140,6 +290,10 @@ impl Library {
             last_opened: local.last_opened,
             imported_at: local.imported_at,
             damaged: recovered.is_some(),
+            imported_revision: local.imported_revision,
+            modified_since_import: local.modified_since_import,
+            web_server: local.web_server,
+            web_code: local.web_code,
         })
     }
 
@@ -202,6 +356,34 @@ impl Library {
             recovered,
         })
     }
+}
+
+/// A show name usable as a folder name on every OS.
+fn safe_file_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"<>:"/\|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .take(60)
+        .collect();
+    let s = s
+        .trim()
+        .trim_end_matches('.')
+        .trim_start_matches('.')
+        .to_string();
+    if s.is_empty() { "Show".into() } else { s }
+}
+
+fn revision_of(origin: &WebOrigin, manifest: &Manifest) -> Option<String> {
+    origin
+        .revision
+        .clone()
+        .or_else(|| manifest.show.source.as_ref().map(|s| s.revision.clone()))
 }
 
 /// Read `manifest.json`; if it is missing or damaged, fall back to `.bak` and say so.

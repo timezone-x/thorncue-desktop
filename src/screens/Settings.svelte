@@ -3,6 +3,7 @@
   import { FAMILIES, setTheme, theme } from "../lib/theme.svelte";
   import { showToast } from "../lib/toast.svelte";
   import AudioSettings from "../components/AudioSettings.svelte";
+  import WebSettings from "../components/WebSettings.svelte";
 
   const MODES: { id: ThemeMode; label: string }[] = [
     { id: "dark", label: "Dark" },
@@ -67,4 +68,6 @@
   </section>
 
   <AudioSettings />
+
+  <WebSettings />
 </main>

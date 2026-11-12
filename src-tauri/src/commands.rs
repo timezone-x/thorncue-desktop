@@ -22,7 +22,7 @@ fn busy() -> String {
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    Ok(state.settings.lock().map_err(|_| busy())?.clone())
+    Ok(state.settings.lock().map_err(|_| busy())?.for_ui())
 }
 
 #[tauri::command]
@@ -41,7 +41,7 @@ pub fn set_theme(
         tracing::error!("saving settings: {e:#}");
         "Couldn't save your settings. Check there is free disk space.".to_string()
     })?;
-    Ok(s.clone())
+    Ok(s.for_ui())
 }
 
 /// GO lockout (ms) and Stop-all fade (s). Clamped to sensible ranges; applied at once.
@@ -62,7 +62,7 @@ pub fn set_audio_options(
     })?;
     *s = next;
     send(&state, Command::SetOptions(s.engine_options()))?;
-    Ok(s.clone())
+    Ok(s.for_ui())
 }
 
 /// The page calls this once it has painted, so the window never shows unstyled.

@@ -150,3 +150,51 @@ export const transport = {
   restart: () => invoke<void>("restart_engine"),
   setMaster: (volume: number) => invoke<void>("set_master", { volume }),
 };
+
+// ---- ThornCue Web (src-tauri/src/web_cmds.rs) ----
+
+export interface WebConnection {
+  server: string | null;
+  insecure: boolean;
+  has_token: boolean;
+  token_store: "keychain" | "settings_file" | null;
+  username: string | null;
+}
+
+export type LocalStatus = "not_imported" | "imported" | "update_available" | "changed_both";
+
+export interface WebShow {
+  code: string;
+  name: string;
+  author: string;
+  owner: string | null;
+  role: string | null;
+  cue_count: number;
+  audio_bytes: number;
+  revision: string;
+  updated_at: string;
+}
+
+export interface WebShowRow extends WebShow {
+  status: LocalStatus;
+  local_id: string | null;
+  local_count: number;
+}
+
+export interface LinkInfo extends WebShow {
+  server: string;
+  insecure: boolean;
+  status: LocalStatus;
+  local_id: string | null;
+}
+
+export const webApi = {
+  connection: () => invoke<WebConnection>("web_connection"),
+  connect: (server: string, token: string) => invoke<WebConnection>("web_connect", { server, token }),
+  check: () => invoke<WebConnection>("web_check"),
+  disconnect: () => invoke<WebConnection>("web_disconnect"),
+  list: () => invoke<WebShowRow[]>("web_list"),
+  linkInfo: (link: string) => invoke<LinkInfo>("web_link_info", { link }),
+  importShow: (code: string, replaceId: string | null) => invoke<ImportResult>("web_import", { code, replaceId }),
+  importLink: (link: string, replaceId: string | null) => invoke<ImportResult>("web_import_link", { link, replaceId }),
+};
