@@ -1017,3 +1017,142 @@ fn pause_freezes_silence_timers_too() {
     render(&mut core, 0.4);
     assert!(core.running_indexes().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// M6: edits while the show is open (UpdatePlan)
+// ---------------------------------------------------------------------------
+
+/// A loader that counts decodes per file name.
+fn counting_loader() -> (Loader, Arc<Mutex<Vec<String>>>) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let l = log.clone();
+    let loader: Loader = Arc::new(move |p: &Path| {
+        l.lock()
+            .unwrap()
+            .push(p.file_name().unwrap().to_string_lossy().to_string());
+        StaticSoundData::from_file(p).map_err(|e| e.to_string())
+    });
+    (loader, log)
+}
+
+fn update(core: &mut Core<TestBackend>, cues: Vec<PlanCue>) {
+    core.handle(Command::UpdatePlan(ShowPlan { cues, standby: 0 }));
+}
+
+#[test]
+fn editing_keeps_running_cues_and_standby_on_their_cues() {
+    let mut a = dc("a");
+    a.trim_start = 1.0;
+    let (mut core, _rx) = ready_core(vec![a.clone(), dc("b"), dc("c")]);
+    core.handle(Command::Go); // a runs, standby on b
+    render(&mut core, 0.5);
+    let mut renamed = a.clone();
+    renamed.name = "Renamed".into();
+    let mut new = PlanCue::audio("n", ladder());
+    new.name = "Inserted".into();
+    update(&mut core, vec![new, renamed, dc("b"), dc("c")]);
+    assert_eq!(
+        core.running_indexes(),
+        vec![1],
+        "a moved to index 1 and is still running"
+    );
+    assert_eq!(core.standby(), 2, "standby still on b");
+    let out = render(&mut core, 0.5);
+    assert!(
+        (out[100] - rung(1)).abs() < 1e-5,
+        "a kept playing without a restart"
+    );
+}
+
+#[test]
+fn a_volume_edit_changes_a_playing_cue_at_once() {
+    let mut a = dc("a");
+    a.trim_start = 1.0;
+    let (mut core, _rx) = ready_core(vec![a.clone()]);
+    core.handle(Command::Go);
+    render(&mut core, 0.3);
+    a.volume = 0.5;
+    update(&mut core, vec![a]);
+    let out = render(&mut core, 0.2);
+    assert!((out[out.len() - 1] - 0.5 * rung(1)).abs() < 1e-5);
+}
+
+#[test]
+fn deleting_a_running_cue_stops_it() {
+    let (mut core, _rx) = ready_core(vec![dc("a"), dc("b")]);
+    core.handle(Command::JumpAndPlay(1));
+    render(&mut core, 1.2);
+    update(&mut core, vec![dc("a")]);
+    render(&mut core, 0.05);
+    assert!(core.running_indexes().is_empty());
+    assert!(silent(&render(&mut core, 0.5)));
+    assert_eq!(
+        core.standby(),
+        1,
+        "standby was past the end of the list; it stays at the end"
+    );
+}
+
+#[test]
+fn a_trim_edit_renders_without_decoding_again() {
+    let (loader, log) = counting_loader();
+    let (mut core, _rx) = core_with(loader);
+    core.handle(Command::LoadShow(plan(vec![dc("a")])));
+    wait_ready(&mut core);
+    let mut a = dc("a");
+    a.trim_start = 3.0;
+    a.trim_end = Some(4.0);
+    update(&mut core, vec![a]);
+    // Ready again once the render lands.
+    let t = Instant::now();
+    while core.snapshot().prep[0].length.is_none() {
+        core.poll_prep();
+        assert!(t.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!((core.snapshot().prep[0].length.unwrap() - 1.0).abs() < 1e-9);
+    assert_eq!(log.lock().unwrap().len(), 1, "decoded once only");
+    core.handle(Command::Go);
+    let out = render(&mut core, 1.2);
+    assert!((out[100] - rung(3)).abs() < 1e-5);
+    assert!(silent(&out[RATE as usize + 10..]));
+}
+
+#[test]
+fn adding_a_cue_decodes_only_the_new_file() {
+    let (loader, log) = counting_loader();
+    let (mut core, _rx) = core_with(loader);
+    core.handle(Command::LoadShow(plan(vec![dc("a")])));
+    wait_ready(&mut core);
+    update(
+        &mut core,
+        vec![dc("a"), PlanCue::audio("t", audio("tone-a440.wav"))],
+    );
+    wait_ready(&mut core);
+    let l = log.lock().unwrap().clone();
+    assert_eq!(
+        l,
+        vec!["ladder-dc.wav".to_string(), "tone-a440.wav".to_string()]
+    );
+    assert_eq!(core.snapshot().prep[1].state, PrepState::Ready);
+}
+
+#[test]
+fn go_while_a_new_edit_renders_then_stop_all_never_starts_it() {
+    let (mut core, _rx) = ready_core(vec![dc("a")]);
+    let mut a = dc("a");
+    a.cuts = vec![[2.0, 3.0]];
+    update(&mut core, vec![a]);
+    // Don't poll: the render is in flight. GO waits for it.
+    core.handle(Command::Go);
+    assert_eq!(core.snapshot().running[0].phase, RunPhase::Starting);
+    core.handle(Command::StopAll { panic: false });
+    let t = Instant::now();
+    while core.snapshot().prep[0].length.is_none() {
+        core.poll_prep();
+        assert!(t.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(silent(&render(&mut core, 0.5)));
+    assert!(core.running_indexes().is_empty());
+}

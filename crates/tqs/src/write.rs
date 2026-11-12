@@ -134,6 +134,12 @@ pub fn write_package_with_progress(
     file.sync_all().map_err(ioerr)?;
     drop(file);
     tmp.persist(out_path).map_err(|e| ioerr(e.error))?;
+    // The temp file was private (0600); an exported show is meant to be passed on.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(out_path, std::fs::Permissions::from_mode(0o644));
+    }
     Ok(manifest)
 }
 

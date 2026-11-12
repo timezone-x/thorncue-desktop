@@ -17,7 +17,7 @@ pub use error::{Result, TqsError, Warning};
 pub use legacy::import_legacy_zip;
 pub use manifest::{
     AUDIO_EXTS, Asset, Continue, Cue, CueType, FORMAT, FORMAT_VERSION, Generator, Manifest, Show,
-    Source, normalise_cuts,
+    Source, normalise_cuts, normalise_manifest,
 };
 pub use read::{PackageKind, Progress, detect_kind, read_package, read_package_with_progress};
 pub use time::now_rfc3339;

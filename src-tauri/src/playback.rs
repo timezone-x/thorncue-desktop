@@ -9,7 +9,7 @@ use engine::{CueKind, Engine, Event, PlanCue, ShowPlan};
 use tauri::{AppHandle, Emitter};
 use tqs::{CueType, Manifest};
 
-use crate::library::{read_local, write_local};
+use crate::library::{read_local, update_local};
 
 /// The open show's folder, so standby changes can be saved to its local.json.
 pub type OpenShowDir = Arc<Mutex<Option<PathBuf>>>;
@@ -62,14 +62,11 @@ fn start_standby_saver(open_dir: OpenShowDir) -> Sender<usize> {
                     standby = s;
                 }
                 let dir = open_dir.lock().ok().and_then(|d| d.clone());
-                if let Some(dir) = dir {
-                    let mut local = read_local(&dir);
-                    if local.standby_index != standby {
-                        local.standby_index = standby;
-                        if let Err(e) = write_local(&dir, &local) {
-                            tracing::warn!("saving standby: {e:#}");
-                        }
-                    }
+                if let Some(dir) = dir
+                    && read_local(&dir).standby_index != standby
+                    && let Err(e) = update_local(&dir, |l| l.standby_index = standby)
+                {
+                    tracing::warn!("saving standby: {e:#}");
                 }
             }
         })

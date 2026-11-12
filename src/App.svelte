@@ -16,6 +16,7 @@
   let screen = $state<Screen>("library");
   let show = $state<ShowView | null>(null);
   let dragging = $state(false);
+  let showScreen = $state<ReturnType<typeof Show>>();
 
   async function openShow(id: string) {
     try {
@@ -62,9 +63,11 @@
       // Drop a .tqs or .zip anywhere on the window (outside the Show screen) to import it.
       unlisten = await getCurrentWebview().onDragDropEvent((e) => {
         const p = e.payload;
-        // Never pop a dialog over the transport during a show: import from the Library.
+        // On the Show screen, dropped audio becomes cues (no dialog over the transport);
+        // shows are imported from the Library.
         if (screen === "show") {
           dragging = false;
+          if (p.type === "drop") showScreen?.dropFiles(p.paths);
           return;
         }
         if (p.type === "enter" || p.type === "over") dragging = true;
@@ -81,7 +84,7 @@
 </script>
 
 {#if screen === "show" && show}
-  <Show {show} onClose={closeShow} />
+  <Show bind:this={showScreen} {show} onClose={closeShow} onChanged={(v) => (show = v)} onOpenShow={openShow} />
 {:else}
   <nav class="site-nav" aria-label="Main">
     <span class="site-nav__brand">ThornCue</span>

@@ -2,9 +2,12 @@
 //! only sends intents and draws state (docs/ARCHITECTURE.md).
 
 mod commands;
+mod edit_cmds;
+mod editing;
 mod fsutil;
 mod library;
 mod playback;
+mod saver;
 mod settings;
 mod web;
 mod web_cmds;
@@ -31,6 +34,7 @@ pub struct AppState {
     /// Downloads in progress (`<app_data_dir>/tmp`).
     pub tmp_dir: PathBuf,
     pub engine: engine::Engine,
+    pub saver: saver::Saver,
 }
 
 pub fn run() {
@@ -69,6 +73,7 @@ pub fn run() {
                 open_dir,
                 tmp_dir,
                 engine,
+                saver: saver::Saver::start(app.handle().clone()),
             });
 
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -114,7 +119,33 @@ pub fn run() {
             web_cmds::web_link_info,
             web_cmds::web_import,
             web_cmds::web_import_link,
+            edit_cmds::update_cue,
+            edit_cmds::move_cue,
+            edit_cmds::add_control_cue,
+            edit_cmds::duplicate_cue,
+            edit_cmds::delete_cue,
+            edit_cmds::set_show_name,
+            edit_cmds::add_audio_cues,
+            edit_cmds::replace_cue_file,
+            edit_cmds::new_show,
+            edit_cmds::duplicate_show,
+            edit_cmds::export_file_name,
+            edit_cmds::export_show,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ThornCue");
+        .build(tauri::generate_context!())
+        .expect("error while starting ThornCue")
+        .run(|app, event| match event {
+            // Never lose an edit: save before the window closes and before the app exits.
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. },
+                ..
+            }
+            | tauri::RunEvent::ExitRequested { .. }
+            | tauri::RunEvent::Exit => {
+                if let Err(e) = saver::save_now(app) {
+                    tracing::error!("saving on exit: {e}");
+                }
+            }
+            _ => {}
+        });
 }

@@ -198,3 +198,30 @@ export const webApi = {
   importShow: (code: string, replaceId: string | null) => invoke<ImportResult>("web_import", { code, replaceId }),
   importLink: (link: string, replaceId: string | null) => invoke<ImportResult>("web_import_link", { link, replaceId }),
 };
+
+// ---- Editing (src-tauri/src/edit_cmds.rs) ----
+
+export interface EditResult {
+  show: ShowView;
+  focus: string | null;
+  problems: string[];
+}
+
+export type CuePatch = Partial<Pick<Cue, "name" | "volume" | "fade_in" | "fade_out" | "pre_wait" | "duration" | "loop" | "continue" | "trim_start" | "trim_end" | "cuts">>;
+
+export const editApi = {
+  updateCue: (id: string, patch: CuePatch) => invoke<EditResult>("update_cue", { id, patch }),
+  moveCue: (id: string, to: number) => invoke<EditResult>("move_cue", { id, to }),
+  addControlCue: (silence: boolean) => invoke<EditResult>("add_control_cue", { silence }),
+  duplicateCue: (id: string) => invoke<EditResult>("duplicate_cue", { id }),
+  deleteCue: (id: string) => invoke<EditResult>("delete_cue", { id }),
+  setShowName: (name: string) => invoke<EditResult>("set_show_name", { name }),
+  addAudioCues: (paths: string[]) => invoke<EditResult>("add_audio_cues", { paths }),
+  replaceCueFile: (id: string, path: string) => invoke<EditResult>("replace_cue_file", { id, path }),
+  newShow: () => invoke<string>("new_show"),
+  duplicateShow: (id: string) => invoke<string>("duplicate_show", { id }),
+  exportFileName: (id: string) => invoke<string>("export_file_name", { id }),
+  exportShow: (id: string, path: string) => invoke<void>("export_show", { id, path }),
+};
+
+export const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "flac", "m4a", "aiff", "aif"];

@@ -1,8 +1,8 @@
 <script lang="ts">
   // The home screen: every show in the library, as a table (DESIGN.md: shows are comparable).
   import { onMount } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { api, errorText, type ShowSummary } from "../lib/api";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { api, editApi, errorText, type ShowSummary } from "../lib/api";
   import { fmtBytes, fmtDate } from "../lib/format";
   import { importFiles, initImporter } from "../lib/importer.svelte";
   import { showToast } from "../lib/toast.svelte";
@@ -49,12 +49,44 @@
     await refresh();
   }
 
+  async function newShow() {
+    try {
+      onOpen(await editApi.newShow());
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
+  async function duplicate(s: ShowSummary) {
+    try {
+      await editApi.duplicateShow(s.id);
+      showToast(`Duplicated "${s.name}".`);
+      await refresh();
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
+  async function exportShow(s: ShowSummary) {
+    try {
+      const name = await editApi.exportFileName(s.id);
+      const path = await saveDialog({ title: "Export show", defaultPath: name, filters: [{ name: "ThornCue show", extensions: ["tqs"] }] });
+      if (!path) return;
+      showToast("Exporting…");
+      await editApi.exportShow(s.id, path);
+      showToast(`Exported "${s.name}".`);
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
   const sourceText = (s: ShowSummary) => (s.source ? `ThornCue Web, ${s.source.code}` : "File");
 </script>
 
 <main class="page page--wide">
   <div class="page-head">
     <h1>Library</h1>
+    <button type="button" class="btn" onclick={newShow}>New show</button>
     <button type="button" class="btn" onclick={onWeb}>Import from the web…</button>
     <button type="button" class="btn btn--primary" onclick={pickFile}>Import file…</button>
   </div>
@@ -64,7 +96,7 @@
   {:else if shows.length === 0}
     <div class="empty">
       <p>No shows yet.</p>
-      <p>Import a <span class="code">.tqs</span> show file or a ThornCue Web export, or drop one onto this window.</p>
+      <p>Start a new show, import a <span class="code">.tqs</span> show file or a ThornCue Web export, or drop one onto this window.</p>
     </div>
   {:else}
     <div class="table-wrap">
@@ -92,6 +124,8 @@
               <td class="date muted">{fmtDate(s.last_opened)}</td>
               <td class="actions">
                 <button type="button" class="btn btn--small btn--primary" onclick={() => onOpen(s.id)}>Open</button>
+                <button type="button" class="btn btn--small" onclick={() => duplicate(s)}>Duplicate</button>
+                <button type="button" class="btn btn--small" onclick={() => exportShow(s)}>Export .tqs</button>
                 <button type="button" class="btn btn--small btn--danger" onclick={() => (confirmDelete = s)}>Delete</button>
               </td>
             </tr>
