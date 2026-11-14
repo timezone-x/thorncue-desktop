@@ -117,6 +117,7 @@ export interface EngineSnapshot {
   standby: number;
   cue_count: number;
   running: { index: number; id: string; phase: RunPhase }[];
+  audition: number | null;
   prep: CuePrep[];
   prep_done: number;
   prep_total: number;
@@ -131,6 +132,9 @@ export interface Position {
   remaining: number | null;
   length: number;
   control: boolean;
+  /** The trim editor's audition (not a cue in the show); source_time is its playhead. */
+  audition: boolean;
+  source_time: number | null;
 }
 
 export interface Notice {
@@ -225,3 +229,17 @@ export const editApi = {
 };
 
 export const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "flac", "m4a", "aiff", "aif"];
+
+// ---- Trim editor (M7) ----
+
+export interface Peaks {
+  duration: number;
+  min: number[];
+  max: number[];
+}
+
+export const trimApi = {
+  peaks: (id: string) => invoke<Peaks>("get_peaks", { id }),
+  audition: (id: string, from: number) => invoke<void>("audition", { id, from }),
+  stopAudition: () => invoke<void>("stop_audition"),
+};

@@ -103,7 +103,11 @@ impl Engine {
         // go through, so the engine's copy of the show never falls behind the app's.
         let playback = matches!(
             cmd,
-            Command::Go | Command::JumpAndPlay(_) | Command::TogglePause | Command::RestartAudio
+            Command::Go
+                | Command::JumpAndPlay(_)
+                | Command::TogglePause
+                | Command::RestartAudio
+                | Command::Audition { .. }
         );
         if self.shared.restarting.load(Ordering::Acquire) && playback {
             return Err(EngineError::Restarting);

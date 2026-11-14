@@ -1156,3 +1156,186 @@ fn go_while_a_new_edit_renders_then_stop_all_never_starts_it() {
     assert!(silent(&render(&mut core, 0.5)));
     assert!(core.running_indexes().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// M7: peaks and audition for the trim editor
+// ---------------------------------------------------------------------------
+
+fn peaks_for(core: &mut Core<TestBackend>, path: PathBuf) -> engine::Peaks {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    core.handle(Command::Peaks { path, reply: tx });
+    let t = Instant::now();
+    loop {
+        if let Ok(r) = rx.try_recv() {
+            return r.unwrap();
+        }
+        core.poll_prep();
+        assert!(t.elapsed() < Duration::from_secs(10), "no peaks");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn peaks_follow_the_audio() {
+    let (mut core, _rx) = ready_core(vec![dc("a")]);
+    let p = peaks_for(&mut core, ladder());
+    assert!((p.duration - 10.0).abs() < 1e-9);
+    assert_eq!(p.max.len(), engine::PEAK_COLUMNS);
+    assert_eq!(p.max[0], 0.0, "second 0 is silent");
+    assert!((p.max[p.max.len() - 1] - rung(9)).abs() < 1e-6);
+    // Column c covers second floor(c * 10 / columns).
+    let c = engine::PEAK_COLUMNS * 45 / 100; // 4.5 s
+    assert!((p.max[c] - rung(4)).abs() < 1e-6);
+}
+
+#[test]
+fn peaks_asked_for_before_decoding_arrive_when_it_finishes() {
+    let (loader, gate) = gated_loader();
+    let (mut core, _rx) = core_with(loader);
+    core.handle(Command::LoadShow(plan(vec![dc("a")])));
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    core.handle(Command::Peaks {
+        path: ladder(),
+        reply: tx,
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    core.poll_prep();
+    assert!(rx.try_recv().is_err(), "not decoded yet");
+    open_gate(&gate);
+    wait_ready(&mut core);
+    let p = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    assert_eq!(p.max.len(), engine::PEAK_COLUMNS);
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    core.handle(Command::Peaks {
+        path: audio("not-in-show.wav"),
+        reply: tx,
+    });
+    assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().is_err());
+}
+
+/// Fixture 02 q10's edit: trim 2-9, cut 4-6.
+fn q10() -> PlanCue {
+    let mut c = dc("q10");
+    c.trim_start = 2.0;
+    c.trim_end = Some(9.0);
+    c.cuts = vec![[4.0, 6.0]];
+    c
+}
+
+fn audition_first_value(core: &mut Core<TestBackend>, from: f64) -> f32 {
+    core.handle(Command::Audition { index: 0, from });
+    let out = render(core, 0.2);
+    out[BLOCK + 10]
+}
+
+#[test]
+fn audition_starts_where_the_marker_is() {
+    let (mut core, _rx) = ready_core(vec![q10()]);
+    // Inside the edit: the cue as edited, from that point.
+    assert!((audition_first_value(&mut core, 6.5) - rung(6)).abs() < 1e-5);
+    let p = core.positions().into_iter().find(|p| p.audition).unwrap();
+    let t = p.source_time.unwrap();
+    assert!(t > 6.5 && t < 6.8, "playhead in source time: {t}");
+    // Inside a cut: from the next kept part (6 s).
+    assert!((audition_first_value(&mut core, 5.0) - rung(6)).abs() < 1e-5);
+    // Before the in point, or after the out point: the file itself from there.
+    assert!((audition_first_value(&mut core, 1.0) - rung(1)).abs() < 1e-5);
+    assert!((audition_first_value(&mut core, 9.5) - rung(9)).abs() < 1e-5);
+    // Auditions aren't cues: nothing shows as running, standby doesn't move.
+    assert!(core.running_indexes().is_empty());
+    assert_eq!(core.standby(), 0);
+    assert_eq!(core.snapshot().audition, Some(0));
+}
+
+#[test]
+fn audition_is_refused_while_cues_run_and_go_and_stop_all_end_it() {
+    let (mut core, rx) = ready_core(vec![q10(), dc("b")]);
+    core.handle(Command::JumpAndPlay(1));
+    render(&mut core, 0.1);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    assert_eq!(core.snapshot().audition, None);
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n.starts_with("Audition plays through the show output"))
+    );
+    core.handle(Command::StopAll { panic: false });
+    render(&mut core, 0.05);
+
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    render(&mut core, 0.1);
+    assert_eq!(core.snapshot().audition, Some(0));
+    core.handle(Command::SetStandby(0)); // the jump left standby at the end of the list
+    core.handle(Command::Go);
+    assert_eq!(core.snapshot().audition, None, "GO ends the audition");
+    core.handle(Command::StopAll { panic: false });
+    render(&mut core, 0.05);
+
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    core.handle(Command::StopAll { panic: false });
+    render(&mut core, 0.05);
+    assert_eq!(core.snapshot().audition, None, "Stop all ends it");
+    assert!(silent(&render(&mut core, 0.5)));
+}
+
+#[test]
+fn an_audition_ends_by_itself_and_survives_edits_to_its_cue() {
+    let (mut core, _rx) = ready_core(vec![q10()]);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 8.5,
+    });
+    render(&mut core, 0.2);
+    let mut edited = q10();
+    edited.cuts = vec![];
+    let other = dc("new");
+    update(&mut core, vec![other, edited]);
+    assert_eq!(
+        core.snapshot().audition,
+        Some(1),
+        "follows its cue to its new index"
+    );
+    render(&mut core, 0.6);
+    assert_eq!(
+        core.snapshot().audition,
+        None,
+        "0.5 s left of the edit: it ends"
+    );
+    core.handle(Command::Audition {
+        index: 1,
+        from: 3.0,
+    });
+    update(&mut core, vec![dc("new")]);
+    assert_eq!(core.snapshot().audition, None, "deleting the cue ends it");
+}
+
+#[test]
+fn the_ui_hears_when_a_pre_wait_ends_without_any_other_change() {
+    // Regression (found in M7): Waiting -> Running happens on the audio thread, and no state
+    // was sent for it, so the transport kept saying "Waiting" while the cue was audible.
+    let mut c = dc("a");
+    c.pre_wait = 0.25;
+    let (mut core, rx) = ready_core(vec![c]);
+    core.handle(Command::Go);
+    render(&mut core, 0.1);
+    let _ = rx.try_iter().count();
+    render(&mut core, 0.4);
+    let last = rx
+        .try_iter()
+        .filter_map(|e| match e {
+            Event::State(s) => Some(s),
+            _ => None,
+        })
+        .last()
+        .expect("a state event once the pre-wait ended");
+    assert_eq!(last.running[0].phase, RunPhase::Running);
+}

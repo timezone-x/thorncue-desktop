@@ -77,6 +77,8 @@ pub struct Snapshot {
     pub standby: usize,
     pub cue_count: usize,
     pub running: Vec<RunningCue>,
+    /// Cue index being auditioned in the trim editor, if any.
+    pub audition: Option<usize>,
     /// One entry per cue, in show order.
     pub prep: Vec<CuePrep>,
     /// Audio files settled (ready, missing or failed) and the total. Equal when loaded.
@@ -98,6 +100,7 @@ impl Snapshot {
             standby: 0,
             cue_count: 0,
             running: Vec::new(),
+            audition: None,
             prep: Vec::new(),
             prep_done: 0,
             prep_total: 0,
@@ -118,6 +121,10 @@ pub struct Position {
     pub length: f64,
     /// A silence or fade-out cue (the strip shows it only when no audio is running).
     pub control: bool,
+    /// The trim editor's audition, not a cue in the show. `source_time` is the playhead in
+    /// seconds into the original file.
+    pub audition: bool,
+    pub source_time: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

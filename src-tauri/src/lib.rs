@@ -131,6 +131,9 @@ pub fn run() {
             edit_cmds::duplicate_show,
             edit_cmds::export_file_name,
             edit_cmds::export_show,
+            edit_cmds::get_peaks,
+            edit_cmds::audition,
+            edit_cmds::stop_audition,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting ThornCue")

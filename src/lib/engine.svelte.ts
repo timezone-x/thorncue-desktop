@@ -29,7 +29,7 @@ export async function startEngineMirror() {
     if (!Array.isArray(e.payload)) return;
     engine.positions = e.payload;
     const snap = engine.snap;
-    if (snap && e.payload.some((p) => !snap.running.some((r) => r.index === p.index))) void resync();
+    if (snap && e.payload.some((p) => !p.audition && !snap.running.some((r) => r.index === p.index))) void resync();
   });
   await listen<Notice>("engine://notice", (e) => showToast(e.payload.text, e.payload.error));
   window.addEventListener("focus", () => void resync());
@@ -45,7 +45,7 @@ export async function resync() {
     const s = await transport.state();
     if (isSnapshot(s)) {
       engine.snap = s;
-      if (s.running.length === 0) engine.positions = [];
+      if (s.running.length === 0 && s.audition === null) engine.positions = [];
     }
   } catch {
     /* the next event or resync will do */
@@ -58,7 +58,7 @@ function accept(s: EngineSnapshot) {
   if (!isSnapshot(s)) return;
   if (engine.snap && s.revision < engine.snap.revision && s.status === engine.snap.status) return;
   engine.snap = s;
-  if (s.running.length === 0) engine.positions = [];
+  if (s.running.length === 0 && s.audition === null) engine.positions = [];
 }
 
 /** Send an intent; a refusal (e.g. "restarting") becomes a toast. Never throws. */

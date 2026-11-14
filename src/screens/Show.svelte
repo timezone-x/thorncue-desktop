@@ -58,6 +58,7 @@
   let saveState = $state<"saved" | "unsaved" | "error">("saved");
   let saveMessage = $state("");
   let confirmDelete = $state<{ cue: Cue; index: number } | null>(null);
+  let inspector = $state<ReturnType<typeof Inspector>>();
 
   onMount(() => {
     void startEngineMirror();
@@ -221,8 +222,9 @@
 
   const nowPlaying = $derived.by(() => {
     // The most recently started audio cue; a silence/fade-out cue only when nothing else plays.
-    const audio = engine.positions.filter((p) => !p.control);
-    const p = audio[audio.length - 1] ?? engine.positions[engine.positions.length - 1];
+    const cuesOnly = engine.positions.filter((p) => !p.audition);
+    const audio = cuesOnly.filter((p) => !p.control);
+    const p = audio[audio.length - 1] ?? cuesOnly[cuesOnly.length - 1];
     if (!p) {
       const r = snap?.running[snap.running.length - 1];
       if (r) return { name: `Q${r.index + 1} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
@@ -330,6 +332,11 @@
     }
     if (document.querySelector("dialog[open]")) return;
     if (isTyping(t)) return;
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      inspector?.trimKey("undo");
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const onRange = t instanceof HTMLElement && t.matches("input[type=range]");
     switch (e.key) {
@@ -360,6 +367,18 @@
         break;
       case "?":
         shortcutsDialog.showModal();
+        break;
+      case "i":
+      case "I":
+        inspector?.trimKey("in");
+        break;
+      case "o":
+      case "O":
+        inspector?.trimKey("out");
+        break;
+      case "x":
+      case "X":
+        inspector?.trimKey("cut");
         break;
     }
   }
@@ -479,7 +498,7 @@
     {/if}
   </main>
 
-  <Inspector cue={inspected} index={inspectedIndex} onEdit={updateCue}
+  <Inspector bind:this={inspector} cue={inspected} index={inspectedIndex} onEdit={updateCue}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
@@ -510,6 +529,9 @@
         <tr><td><kbd>P</kbd></td><td>Pause or resume everything</td></tr>
         <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move standby up or down</td></tr>
         <tr><td><kbd>J</kbd></td><td>Jump to a cue number and play it</td></tr>
+        <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Set the in or out point at the marker (or the audition playhead)</td></tr>
+        <tr><td><kbd>X</kbd></td><td>Cut the selected section</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>Undo the last trim or cut</td></tr>
         <tr><td><kbd>?</kbd></td><td>This list</td></tr>
       </tbody>
     </table>

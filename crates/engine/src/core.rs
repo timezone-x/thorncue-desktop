@@ -29,7 +29,7 @@ use crate::state::{
 pub type ManagerFactory<B> = Box<dyn FnMut() -> Result<AudioManager<B>, String> + Send>;
 
 /// Everything the UI can ask for. Commands are intents; the engine decides what they mean.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Command {
     /// A different show: everything stops and its audio is prepared from scratch.
     LoadShow(ShowPlan),
@@ -55,6 +55,20 @@ pub enum Command {
         volume: f64,
     },
     SetOptions(Options),
+    /// Waveform peaks of an audio file in the show, for the trim editor. Answered on `reply`
+    /// from the prep pool (after the file has decoded, if it hasn't yet).
+    Peaks {
+        path: PathBuf,
+        reply: crate::peaks::PeaksReply,
+    },
+    /// Trim editor: play cue `index` from `from` seconds into its file, at its volume, without
+    /// fades or pre-wait. Refused while cues are running: until a headphone output exists
+    /// (M8), audition goes to the show output (W5).
+    Audition {
+        index: usize,
+        from: f64,
+    },
+    StopAudition,
 }
 
 /// Operator settings that change how the transport behaves.
@@ -93,6 +107,8 @@ struct Asset {
     edits: HashMap<EditKey, Option<StaticSoundData>>,
     /// Edits submitted to the prep pool and not back yet.
     in_flight: Vec<EditKey>,
+    /// Peaks asked for before the file finished decoding.
+    peaks_waiting: Vec<crate::peaks::PeaksReply>,
     /// Bytes held in memory (decoded source plus rendered cuts).
     bytes: u64,
 }
@@ -121,6 +137,47 @@ impl Running {
             Running::Audio { index, .. } | Running::Timer { index, .. } => *index,
         }
     }
+}
+
+/// The trim editor's audition: one sound, never part of the show.
+struct Audition {
+    index: usize,
+    track: TrackHandle,
+    sound: StaticSoundHandle,
+    gain: CueGainHandle,
+    /// Source-file segments of the audio being played, in order, and where in it play began.
+    segments: Vec<(f64, f64)>,
+    offset: f64,
+}
+
+impl Audition {
+    /// Playhead in source-file seconds.
+    fn source_time(&self) -> f64 {
+        let mut t = self.offset + self.gain.elapsed();
+        for &(s, e) in &self.segments {
+            if t <= e - s {
+                return s + t;
+            }
+            t -= e - s;
+        }
+        self.segments.last().map_or(0.0, |s| s.1)
+    }
+}
+
+/// Seconds into the edited audio that correspond to `source` seconds into the file. Inside a
+/// cut: the start of the next kept segment.
+fn edited_time(segments: &[(f64, f64)], source: f64) -> f64 {
+    let mut acc = 0.0;
+    for &(s, e) in segments {
+        if source < s {
+            return acc;
+        }
+        if source < e {
+            return acc + (source - s);
+        }
+        acc += e - s;
+    }
+    acc
 }
 
 /// A GO on a cue whose audio is still decoding (W1).
@@ -161,6 +218,10 @@ pub struct Core<B: EngineBackend> {
     pending: Vec<PendingStart>,
     /// Sounds stopped by us, kept until kira reports them stopped.
     stopping: Vec<(TrackHandle, StaticSoundHandle)>,
+    audition: Option<Audition>,
+    /// Running cues' phases as last sent: the audio thread changes them (a pre-wait ends, a
+    /// fade starts), so `tick` compares and sends a new snapshot when they move.
+    last_phases: Vec<(usize, RunPhase)>,
 
     out: Box<dyn FnMut(Event) + Send>,
     revision: u64,
@@ -206,6 +267,8 @@ impl<B: EngineBackend> Core<B> {
             running: Vec::new(),
             pending: Vec::new(),
             stopping: Vec::new(),
+            audition: None,
+            last_phases: Vec::new(),
             out,
             revision: 0,
             dirty: true,
@@ -355,11 +418,15 @@ impl<B: EngineBackend> Core<B> {
                 }
             }
             Command::SetOptions(o) => self.options = o,
+            Command::Peaks { path, reply } => self.peaks(path, reply),
+            Command::Audition { index, from } => self.start_audition(index, from),
+            Command::StopAudition => self.stop_audition(),
         }
         self.dirty = true;
     }
 
     fn load_show(&mut self, plan: ShowPlan) {
+        self.stop_audition();
         self.stop_everything_now();
         self.set_paused(false);
         self.generation += 1;
@@ -405,6 +472,17 @@ impl<B: EngineBackend> Core<B> {
         }
         for r in gone {
             self.retire(r);
+        }
+        // The audition keeps playing through edits (you trim while listening); it follows its
+        // cue, and stops if the cue was deleted.
+        match self.audition.as_ref().map(|a| remap(a.index)) {
+            Some(Some(n)) => {
+                if let Some(a) = self.audition.as_mut() {
+                    a.index = n;
+                }
+            }
+            Some(None) => self.stop_audition(),
+            None => {}
         }
         self.running = keep;
         self.pending = std::mem::take(&mut self.pending)
@@ -453,6 +531,7 @@ impl<B: EngineBackend> Core<B> {
                     raw: None,
                     edits: HashMap::new(),
                     in_flight: Vec::new(),
+                    peaks_waiting: Vec::new(),
                     bytes: 0,
                 });
                 let a = self.assets.len() - 1;
@@ -557,6 +636,8 @@ impl<B: EngineBackend> Core<B> {
             return;
         }
         self.last_go = Some(Instant::now());
+        // The show starts: an audition on the same output would be heard by the audience.
+        self.stop_audition();
         self.fire(self.standby);
     }
 
@@ -748,6 +829,8 @@ impl<B: EngineBackend> Core<B> {
     /// Stop all always wins (CLAUDE.md rule 3): every running cue, every pending start, every
     /// silence/fade-out timer. With a stop fade set (and not a panic), audio fades out.
     fn stop_all(&mut self, panic: bool) {
+        // Stop all always wins: the audition too (ARCHITECTURE.md transport table).
+        self.stop_audition();
         let fade = if panic { 0.0 } else { self.options.stop_fade };
         if fade > 0.0 {
             self.pending.clear();
@@ -812,6 +895,110 @@ impl<B: EngineBackend> Core<B> {
         }
     }
 
+    fn peaks(&mut self, path: PathBuf, reply: crate::peaks::PeaksReply) {
+        let Some(&a) = self.by_path.get(&path) else {
+            let _ = reply.send(Err("That audio file isn't in the show.".into()));
+            return;
+        };
+        let asset = &mut self.assets[a];
+        match (&asset.state, &asset.raw) {
+            (PrepState::Ready, Some(raw)) => {
+                self.prep
+                    .submit_peaks(raw.clone(), crate::peaks::PEAK_COLUMNS, reply)
+            }
+            (PrepState::Pending | PrepState::Decoding, _) => asset.peaks_waiting.push(reply),
+            (PrepState::Missing, _) => {
+                let _ = reply.send(Err("The audio file is missing.".into()));
+            }
+            _ => {
+                let _ = reply.send(Err("The audio file can't be decoded.".into()));
+            }
+        }
+    }
+
+    fn start_audition(&mut self, i: usize, from: f64) {
+        self.stop_audition();
+        let Some(cue) = self.plan.cues.get(i).cloned() else {
+            return;
+        };
+        if !self.running.is_empty() || !self.pending.is_empty() {
+            self.notice(
+                "Audition plays through the show output, so it's off while cues are running. Stop all first.",
+                true,
+            );
+            return;
+        }
+        let ready = self.cue_asset[i].and_then(|a| {
+            let asset = &self.assets[a];
+            let raw = asset.raw.clone()?;
+            let edited = asset.edits.get(&self.edit_key(i))?.clone();
+            Some((raw, edited))
+        });
+        let Some((raw, edited)) = ready else {
+            let q = self.q(i);
+            self.notice(
+                format!("{q} isn't loaded yet, so it can't be auditioned."),
+                true,
+            );
+            return;
+        };
+        let duration = raw.frames.len() as f64 / raw.sample_rate as f64;
+        let from = from.clamp(0.0, duration);
+        let out = cue.trim_end.map_or(duration, |e| e.min(duration));
+        let segs = crate::edit::kept_segments(cue.trim_start, cue.trim_end, &cue.cuts, duration);
+        // From inside the edit: hear the cue as edited. Before the in point or after the out
+        // point: hear the file itself from there (so you can find a new in or out point).
+        let (data, segments, offset) = match edited {
+            Some(d) if from >= cue.trim_start && from < out && !segs.is_empty() => {
+                let offset = edited_time(&segs, from);
+                (d, segs, offset)
+            }
+            _ if from < duration - 0.001 => {
+                (raw.slice(from..duration), vec![(from, duration)], 0.0)
+            }
+            _ => return,
+        };
+        let Some(show) = self.show_track.as_mut() else {
+            return;
+        };
+        let mut data = data;
+        data.settings.start_position = kira::sound::PlaybackPosition::Seconds(offset);
+        let mut builder = TrackBuilder::new().sound_capacity(1);
+        let gain = builder.add_effect(CueGainBuilder {
+            volume: cue.volume,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            length: f64::MAX,
+            looping: false,
+            start: None,
+        });
+        let Ok(mut track) = show.add_sub_track(builder) else {
+            return;
+        };
+        match track.play(data) {
+            Ok(sound) => {
+                self.audition = Some(Audition {
+                    index: i,
+                    track,
+                    sound,
+                    gain,
+                    segments,
+                    offset,
+                });
+                self.dirty = true;
+            }
+            Err(e) => tracing::error!("audition of cue {i}: {e}"),
+        }
+    }
+
+    fn stop_audition(&mut self) {
+        if let Some(mut a) = self.audition.take() {
+            a.sound.stop(INSTANT);
+            self.stopping.push((a.track, a.sound));
+            self.dirty = true;
+        }
+    }
+
     fn toggle_pause(&mut self) {
         if self.show_track.is_some() {
             self.set_paused(!self.paused);
@@ -819,6 +1006,7 @@ impl<B: EngineBackend> Core<B> {
     }
 
     fn restart(&mut self) {
+        self.audition = None;
         self.stop_everything_now();
         self.stopping.clear();
         self.show_track = None;
@@ -891,13 +1079,27 @@ impl<B: EngineBackend> Core<B> {
                             }
                         }
                         a.bytes = bytes;
+                        for reply in std::mem::take(&mut a.peaks_waiting) {
+                            if let Some(raw) = a.raw.clone() {
+                                self.prep
+                                    .submit_peaks(raw, crate::peaks::PEAK_COLUMNS, reply);
+                            }
+                        }
                         // Edits added while it was decoding.
                         self.ensure_edits(asset);
                     }
-                    Err(e) if e == MISSING => self.assets[asset].state = PrepState::Missing,
+                    Err(e) if e == MISSING => {
+                        self.assets[asset].state = PrepState::Missing;
+                        for reply in std::mem::take(&mut self.assets[asset].peaks_waiting) {
+                            let _ = reply.send(Err("The audio file is missing.".into()));
+                        }
+                    }
                     Err(e) => {
                         tracing::warn!("can't decode {}: {e}", self.assets[asset].path.display());
                         self.assets[asset].state = PrepState::Failed(e);
+                        for reply in std::mem::take(&mut self.assets[asset].peaks_waiting) {
+                            let _ = reply.send(Err("The audio file can't be decoded.".into()));
+                        }
                     }
                 }
                 // Start any GO that was waiting for this file (and wasn't cancelled by Stop all).
@@ -945,16 +1147,35 @@ impl<B: EngineBackend> Core<B> {
         }
         self.check_heartbeat();
         self.retire_finished();
+        if self
+            .audition
+            .as_ref()
+            .is_some_and(|a| a.sound.state() == PlaybackState::Stopped)
+        {
+            self.stop_audition();
+            self.dirty = true;
+        }
         self.stopping
             .retain(|(_, s)| s.state() != PlaybackState::Stopped);
 
+        let phases: Vec<(usize, RunPhase)> = self
+            .running
+            .iter()
+            .map(|r| (r.index(), self.phase_of(r)))
+            .collect();
+        if phases != self.last_phases {
+            self.last_phases = phases;
+            self.dirty = true;
+        }
         if self.dirty {
             self.dirty = false;
             self.revision += 1;
             let snap = self.snapshot();
             (self.out)(Event::State(snap));
         }
-        if !self.running.is_empty() && self.last_positions.elapsed() >= Duration::from_millis(33) {
+        if (!self.running.is_empty() || self.audition.is_some())
+            && self.last_positions.elapsed() >= Duration::from_millis(33)
+        {
             self.last_positions = Instant::now();
             let p = self.positions();
             (self.out)(Event::Positions(p));
@@ -1093,6 +1314,8 @@ impl<B: EngineBackend> Core<B> {
                         remaining: (!looping).then(|| (length - elapsed).max(0.0)),
                         length: *length,
                         control: false,
+                        audition: false,
+                        source_time: None,
                     }
                 }
                 Running::Timer { index, start, end } => {
@@ -1105,10 +1328,45 @@ impl<B: EngineBackend> Core<B> {
                         remaining: Some(length - elapsed),
                         length,
                         control: self.plan.cues[*index].kind != CueKind::Audio,
+                        audition: false,
+                        source_time: None,
                     }
                 }
             })
+            .chain(self.audition.as_ref().map(|a| {
+                let total: f64 = a.segments.iter().map(|(s, e)| e - s).sum();
+                let elapsed = a.offset + a.gain.elapsed();
+                Position {
+                    index: a.index,
+                    id: self
+                        .plan
+                        .cues
+                        .get(a.index)
+                        .map(|c| c.id.clone())
+                        .unwrap_or_default(),
+                    elapsed,
+                    remaining: Some((total - elapsed).max(0.0)),
+                    length: total,
+                    control: false,
+                    audition: true,
+                    source_time: Some(a.source_time()),
+                }
+            }))
             .collect()
+    }
+
+    fn phase_of(&self, r: &Running) -> RunPhase {
+        match r {
+            // A cue we've stopped with a fade shows as fading at once, before the audio
+            // thread has picked the fade up.
+            Running::Audio { stopped: true, .. } => RunPhase::Fading,
+            Running::Audio { gain, .. } => match gain.phase() {
+                GainPhase::Waiting => RunPhase::Waiting,
+                GainPhase::Playing => RunPhase::Running,
+                GainPhase::Fading | GainPhase::Silent => RunPhase::Fading,
+            },
+            Running::Timer { .. } => RunPhase::Running,
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -1122,22 +1380,11 @@ impl<B: EngineBackend> Core<B> {
             })
             .collect();
         running.extend(self.running.iter().map(|r| {
-            let phase = match r {
-                // A cue we've stopped with a fade shows as fading at once, before the audio
-                // thread has picked the fade up.
-                Running::Audio { stopped: true, .. } => RunPhase::Fading,
-                Running::Audio { gain, .. } => match gain.phase() {
-                    GainPhase::Waiting => RunPhase::Waiting,
-                    GainPhase::Playing => RunPhase::Running,
-                    GainPhase::Fading | GainPhase::Silent => RunPhase::Fading,
-                },
-                Running::Timer { .. } => RunPhase::Running,
-            };
             let index = r.index();
             RunningCue {
                 index,
                 id: self.plan.cues[index].id.clone(),
-                phase,
+                phase: self.phase_of(r),
             }
         }));
         let prep = (0..self.plan.cues.len())
@@ -1178,6 +1425,7 @@ impl<B: EngineBackend> Core<B> {
             prep,
             prep_done: self.assets.iter().filter(|a| a.state.is_settled()).count(),
             prep_total: self.assets.len(),
+            audition: self.audition.as_ref().map(|a| a.index),
             decoded_bytes: self.assets.iter().map(|a| a.bytes).sum(),
             master: self.master,
         }
