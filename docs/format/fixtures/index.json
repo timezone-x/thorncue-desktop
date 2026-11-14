@@ -30,10 +30,82 @@
     "expected": "expected/05-from-web.json"
   },
   {
+    "file": "valid/06-groups.tqs",
+    "expect": "accept",
+    "about": "A show with two groups and ungrouped cues between them. Group colours are lowercased.",
+    "expected": "expected/06-groups.json"
+  },
+  {
+    "file": "valid/07-cues.tqc",
+    "expect": "accept",
+    "about": "A .tqc: three cues, two sharing one audio file. No show section, no groups.",
+    "expected": "expected/07-cues.json"
+  },
+  {
+    "file": "valid/08-group.tqg",
+    "expect": "accept",
+    "about": "A .tqg: one group and its three cues.",
+    "expected": "expected/08-group.json"
+  },
+  {
+    "file": "valid/09-groups-need-normalising.tqs",
+    "expect": "accept",
+    "about": "Group cues not next to each other are pulled together; empty group dropped; empty name and bad colour defaulted. Compare with expected/.",
+    "expected": "expected/09-groups-need-normalising.json"
+  },
+  {
+    "file": "valid/10-cues-with-groups.tqc",
+    "expect": "accept",
+    "about": "A .tqc with a stray show section and groups: readers ignore both.",
+    "expected": "expected/10-cues-with-groups.json"
+  },
+  {
     "file": "invalid/bad-format-name.tqs",
     "expect": "reject",
     "rule": "2.1 format",
-    "about": "format is not thorncue.show"
+    "about": "format is an unknown name (thorncue.playlist)"
+  },
+  {
+    "file": "invalid/group-unknown-ref.tqs",
+    "expect": "reject",
+    "rule": "2.7 groups",
+    "about": "a cue is in a group that isn't in groups"
+  },
+  {
+    "file": "invalid/group-duplicate-id.tqs",
+    "expect": "reject",
+    "rule": "2.7 groups",
+    "about": "two groups with the id g"
+  },
+  {
+    "file": "invalid/group-bad-id.tqs",
+    "expect": "reject",
+    "rule": "2.7 groups",
+    "about": "group id with capitals and a space"
+  },
+  {
+    "file": "invalid/groups-not-a-list.tqs",
+    "expect": "reject",
+    "rule": "2.7 groups",
+    "about": "groups is an object"
+  },
+  {
+    "file": "invalid/tqg-two-groups.tqg",
+    "expect": "reject",
+    "rule": "6.3 .tqg",
+    "about": "a .tqg with two groups"
+  },
+  {
+    "file": "invalid/tqg-cue-outside-group.tqg",
+    "expect": "reject",
+    "rule": "6.3 .tqg",
+    "about": "a .tqg whose cue isn't in the group"
+  },
+  {
+    "file": "invalid/tqg-no-cues.tqg",
+    "expect": "reject",
+    "rule": "6.3 .tqg",
+    "about": "a .tqg with a group and no cues"
   },
   {
     "file": "invalid/future-version.tqs",

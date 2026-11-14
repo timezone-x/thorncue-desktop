@@ -1,16 +1,19 @@
-# ThornCue show package format (`.tqs`), version 1
+# ThornCue package format (`.tqs`, `.tqc`, `.tqg`), format_version 1
 
-Status: **v1, frozen for the first release.** This file is the contract between ThornCue Web and the ThornCue desktop client. Both repos carry an identical copy. Change it in both, in the same week, or not at all.
+Spec revision **1.1** (2026-11-14). Status: **format_version 1, stable.** This file is the contract between ThornCue Web and the ThornCue desktop client. The master copy lives in `timezone-x/thorncue-spec`; each app repo carries an unedited copy in `docs/format/`. Changes are made in the spec repo only (see its `SESSIONS.md`), and `CHANGELOG.md` there lists what changed in each revision.
 
-| Extension | What it is | Status |
+| Extension | `format` | What it is |
 |---|---|---|
-| `.tqs` | A whole show: cue list and audio | Defined here |
-| `.tqc` | A single cue, or a set of cues, with their audio (for copying cues between shows) | Reserved. Same container rules, `format: "thorncue.cues"`. Not specified yet; nobody writes it in v1 |
+| `.tqs` | `thorncue.show` | A whole show: cue list, groups and audio |
+| `.tqc` | `thorncue.cues` | One or more cues with their audio, for copying cues between shows (section 6) |
+| `.tqg` | `thorncue.group` | One group with its cues and audio (section 6) |
+
+All three are the same container with the same manifest; they differ only in which top-level sections they have. One reader handles all three.
 
 Files in this folder:
 
 - `FORMAT.md`: this spec (normative).
-- `manifest.schema.json`: JSON Schema for `manifest.json`. Covers shape and ranges; the rules below that a schema can't express (cross-references, zip safety, hashes) are normative too.
+- `manifest.schema.json`: JSON Schema for `manifest.json` (all three kinds). Covers shape and ranges; the rules below that a schema can't express (cross-references, zip safety, hashes, grouping) are normative too.
 - `fixtures/`: packages every implementation must pass. `valid/` must import, `invalid/` must be rejected with a clear error, `legacy/` is the old web "Export ZIP" format.
 - `tools/tqs_ref.py`: reference reader and writer, Python standard library only. When this spec and the reference tool disagree, the spec wins and the tool has a bug.
 
@@ -107,11 +110,12 @@ Extract to a temporary directory on the same filesystem as the destination, veri
 
 | Field | Type | Rule |
 |---|---|---|
-| `format` | string | MUST be `"thorncue.show"`. Anything else: reject ("not a ThornCue show"). |
+| `format` | string | `"thorncue.show"`, `"thorncue.cues"` or `"thorncue.group"` (the *kind*: show, cues, group). Anything else: reject ("not a ThornCue file"). An app that only accepts one kind in a given place (opening a show, importing cues) says which kind the file is instead ("This is a cue file (.tqc), not a show"). |
 | `format_version` | integer | `1`. A reader MUST reject a higher version with a message telling the user to update ThornCue ("This show was made by a newer version of ThornCue"). There is no minor version: additive changes don't bump it (see 2.6). |
 | `generator` | object | `name` (string, ≤ 64) and `version` (string, ≤ 64). Informational. Readers MUST NOT change behaviour based on it. |
 | `exported_at` | string | RFC 3339 UTC timestamp, `Z` suffix. Informational. |
-| `show` | object | Section 2.2. |
+| `show` | object | Shows only, required there. Section 2.2. In `.tqc` and `.tqg` it is absent; readers MUST ignore it if present. |
+| `groups` | array | Optional, default `[]`. Section 2.7. Writers SHOULD omit it when there are no groups, so a group-free file is byte-for-byte what a 1.0 writer produces. |
 | `assets` | object | Map of asset id → asset. MAY be empty. Section 2.3. |
 | `cues` | array | Ordered cue list, at most 2,000 cues. Order is play order. MAY be empty. Section 2.4. |
 
@@ -131,7 +135,7 @@ Extract to a temporary directory on the same filesystem as the destination, veri
 | `kind` | string | `"thorncue-web"` in v1. Readers MUST ignore `source` entirely if `kind` is unknown. |
 | `server` | string | The server's public base URL, scheme + host (+ port), no trailing slash. |
 | `code` | string | The show code on that server. |
-| `revision` | string | Opaque string that changes whenever the show changes. Clients compare it for equality only and MUST NOT parse it. (The web uses the show file's modification time in RFC 3339, but don't rely on that.) |
+| `revision` | string | Opaque string that changes whenever the show changes. Clients compare it for equality only and MUST NOT parse it. (The web currently uses the show file's modification time in nanoseconds as hex; don't rely on that.) |
 
 There is deliberately no show id. A show's identity inside a client is the client's own business; `source.server` + `source.code` is how a client recognises "I already imported this one".
 
@@ -151,7 +155,7 @@ Assets are separate from cues so that two cues can share one file (a duplicated 
 
 ### 2.4 Cues
 
-Every cue has every field below. Writers MUST write all of them. Readers MUST accept a missing field by using the default (this is what makes additive changes safe, see 2.6).
+Every cue has every field below except `group`. Writers MUST write all of them, and write `group` only for cues that are in a group. Readers MUST accept a missing field by using the default (this is what makes additive changes safe, see 2.6).
 
 | Field | Type | Default | Range / rule |
 |---|---|---|---|
@@ -169,6 +173,7 @@ Every cue has every field below. Writers MUST write all of them. Readers MUST ac
 | `trim_start` | number | `0.0` | ≥ 0 seconds into the source file. |
 | `trim_end` | number or null | `null` | Seconds into the source file, or `null` for "to the end of the file". If not null it MUST be > `trim_start`; otherwise readers treat it as `null`. |
 | `cuts` | array | `[]` | Up to 50 `[start, end]` pairs in source-file seconds, `end > start ≥ 0`. Section 2.5. |
+| `group` | string or absent | absent | Id of the group this cue belongs to (section 2.7). Absent (or `null`) means ungrouped. |
 
 All times are seconds as JSON numbers. Writers SHOULD round to 4 decimal places. Every number MUST be finite (no NaN or Infinity, which JSON can't carry anyway, but check after parsing in languages that allow them).
 
@@ -208,22 +213,51 @@ The web's checkbox is labelled "Auto-continue" and its JSON field is `auto_conti
 - **Unknown enum values** (`type`, `continue`): readers MUST reject the package with a message to update ThornCue. Playing a cue with a misunderstood type during a show is worse than refusing to open it.
 - Anything that changes the meaning of an existing field, or adds a value a v1 player would misplay, bumps `format_version`.
 
+### 2.7 Groups
+
+A group is a named, coloured label around a run of consecutive cues, for finding your way around a long show. **Groups never change playback**: GO, standby and `continue` behave exactly as if there were no groups. Whether a group is shown collapsed is a per-user view setting and is never stored in a package.
+
+`groups` is an array of:
+
+| Field | Type | Rule |
+|---|---|---|
+| `id` | string | 1–64 chars from `[a-z0-9_-]`, unique among the file's groups. Readers MAY assign new ids, keeping cue references in step. |
+| `name` | string | 1–60 characters after trimming. Empty: readers use `"Group"`. |
+| `color` | string | `#rrggbb`, lowercase. Writers MUST write lowercase; readers lowercase it. Anything that isn't six hex digits: readers use `#3e7bd6` and warn. Colour is the user's label only; apps MUST NOT use it to mean status. |
+
+Rules (readers enforce them in this order):
+
+1. `groups` that isn't an array, an entry that isn't an object, an invalid or duplicate `id`, or a cue whose `group` names an id not in `groups`: **reject** (wrong types and broken references are rejections, as for assets).
+2. A group's cues MUST be consecutive in `cues`. If they aren't, readers pull each group's cues together at the position of the group's first cue, keeping their order, and warn. (Ungrouped cues keep their relative order.)
+3. A group with no cues is dropped with a warning.
+4. One group per cue. Groups don't nest.
+
+Order of `groups` has no meaning; writers SHOULD list them in the order they first appear in `cues`.
+
 ---
 
 ## 3. Writing a package (what every exporter does)
 
-1. Build the manifest with every field present. Drop `audio` cues' assets that are missing on disk and set those cues' `asset` to `null` (don't fail the whole export because one file is gone; the importer will show it as missing).
+1. Build the manifest with every field present (and `groups` / cue `group` only when used). Drop `audio` cues' assets that are missing on disk and set those cues' `asset` to `null` (don't fail the whole export because one file is gone; the importer will show it as missing). Include only the assets the exported cues use.
 2. Write `manifest.json` first, then each audio file under `audio/<asset-id>.<ext>` with STORE. Compute SHA-256 and byte count while streaming each file; don't load whole files into memory.
 3. Because the hashes go in the manifest and the manifest goes first, hash the files in a first pass, then write. (Or write audio to a temp zip and the manifest afterwards; but then it isn't first. Hash first.)
 4. Write to a temporary file, then rename into place / stream it to the client. Never build the whole package in RAM.
 
-Suggested download filename: the show name made filesystem-safe, plus `.tqs`, e.g. `Cinderella.tqs`. MIME type: `application/vnd.thorncue.show+zip` (unregistered; `application/zip` is an acceptable fallback).
+Suggested download filenames, made filesystem-safe:
+
+| Kind | Filename | MIME type |
+|---|---|---|
+| show | `<show name>.tqs`, e.g. `Cinderella.tqs` | `application/vnd.thorncue.show+zip` |
+| cues | one cue: `<cue name>.tqc`; several: `<show name> - Q4 to Q9.tqc` | `application/vnd.thorncue.cues+zip` |
+| group | `<group name>.tqg`, e.g. `Storm.tqg` | `application/vnd.thorncue.group+zip` |
+
+The MIME types are unregistered; `application/zip` is an acceptable fallback.
 
 ## 4. Reading a package (what every importer does)
 
 1. Open the zip. Apply every rule in 1.3 to the central directory before extracting anything.
-2. Read and parse `manifest.json`. Check `format` and `format_version`. Validate types, clamp ranges, apply defaults, normalise cuts.
-3. Check cross-references: every non-null cue `asset` exists in `assets`; every asset has its entry; every asset `path` matches its id.
+2. Read and parse `manifest.json`. Check `format` (and that it's a kind this place accepts) and `format_version`. Validate types, clamp ranges, apply defaults, normalise cuts.
+3. Check cross-references: every non-null cue `asset` exists in `assets`; every asset has its entry; every asset `path` matches its id. Then groups, per 2.7 and, for `.tqc`/`.tqg`, section 6.
 4. Extract audio to a temp directory, counting bytes and computing SHA-256 as you go. Reject on hash mismatch or size mismatch ("file X is damaged").
 5. Check each audio file actually decodes as audio (web: content sniffing; client: probe with the decoder). A file that doesn't decode is rejected; don't import a show that will fail at GO.
 6. Move into place. Clean up the temp directory on every failure path.
@@ -247,6 +281,36 @@ ThornCue Web's original export, still worth importing:
 | `filename` `""` | `asset: null` (non-audio cue, or audio cue with no file) |
 | `filename` `"<x>.<ext>"` | asset id `<x>` (lowercased), path `audio/<x>.<ext>`; hash computed on import |
 | `auto_continue: true/false` | `continue: "after_end"/"none"` |
-| `fade_out` on a `fadeout` cue | ignored (the web plays `duration` as the fade time; it only ever used `duration`) |
+| `fade_out` on a `fadeout` cue | kept as it is but never used for playback (a fade-out cue fades over `duration`; the web never read `fade_out` for these) |
 
 Legacy zips get the same safety rules as section 1.3. There is no hash to verify, so importers compute one.
+
+## 6. Cue files (`.tqc`) and group files (`.tqg`)
+
+Same container (section 1) and manifest (section 2), for moving cues between shows.
+
+### 6.1 Shared rules
+
+- No `show` section. Readers ignore one if present.
+- `cues` has at least 1 cue. `assets` holds only what those cues use; two cues sharing a file share an asset, as in a show.
+- Cue ids only need to be unique within the file.
+
+### 6.2 `.tqc`: cues
+
+`format: "thorncue.cues"`. One or more cues, in order. No groups: writers omit `groups` and cue `group`. Readers ignore both if present (with a warning), so exporting cues that were in a group gives plain cues.
+
+### 6.3 `.tqg`: a group
+
+`format: "thorncue.group"`. `groups` holds **exactly one** group, and **every** cue's `group` is that group's id. Anything else (no group, two groups, a cue outside the group, no cues) is rejected.
+
+### 6.4 Importing a `.tqc` or `.tqg` into a show
+
+What both apps do, so the result is the same in either:
+
+1. Validate the whole file first (sections 1.3 and 4). Nothing is added to the show unless the whole file is good.
+2. Every imported cue, asset and group gets a **new id**. Nothing in the file is ever merged into something already in the show: a `.tqg` called "Storm" imported into a show that has a "Storm" group becomes a second group with the same name.
+3. Imported cues are added **at the end of the show**, in file order. (Apps MAY offer "insert after the selected cue" as well; if a `.tqc` lands inside a group it joins that group, and a `.tqg` is never inserted inside another group.)
+4. A `.tqg`'s cues stay together as one group with the file's name and colour.
+5. Standby doesn't move. Running cues aren't touched.
+
+Audio is copied into the show the same way the app stores any other audio (the web gives each cue its own file; the desktop app keeps shared assets shared). An app MAY skip copying a file it already holds with the same SHA-256.

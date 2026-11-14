@@ -1,4 +1,5 @@
-//! ThornCue show packages (`.tqs`), format version 1. `docs/format/FORMAT.md` is the spec;
+//! ThornCue packages (`.tqs` shows, `.tqc` cue files, `.tqg` group files), format version 1,
+//! spec 1.1. `docs/format/FORMAT.md` is the spec;
 //! this is a port of `docs/format/tools/tqs_ref.py`, following the spec where they differ.
 //!
 //! No Tauri and no kira here (CLAUDE.md rule 6).
@@ -16,10 +17,13 @@ pub use audio::check_audio_file;
 pub use error::{Result, TqsError, Warning};
 pub use legacy::import_legacy_zip;
 pub use manifest::{
-    AUDIO_EXTS, Asset, Continue, Cue, CueType, FORMAT, FORMAT_VERSION, Generator, Manifest, Show,
-    Source, normalise_cuts, normalise_manifest,
+    AUDIO_EXTS, Asset, Continue, Cue, CueType, DEFAULT_GROUP_COLOR, FORMAT, FORMAT_VERSION,
+    Generator, Group, Kind, MAX_GROUPS, Manifest, Show, Source, gather_groups, normalise_cuts,
+    normalise_manifest, normalise_manifest_of,
 };
-pub use read::{PackageKind, Progress, detect_kind, read_package, read_package_with_progress};
+pub use read::{
+    PackageKind, Progress, detect_kind, read_package, read_package_of, read_package_with_progress,
+};
 pub use time::now_rfc3339;
 pub use write::{write_package, write_package_with_progress};
 

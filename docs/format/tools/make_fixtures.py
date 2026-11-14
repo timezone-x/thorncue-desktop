@@ -2,7 +2,9 @@
 """
 Rebuild every fixture in ../fixtures from scratch.
 
-    python make_fixtures.py            # needs ffmpeg (with libmp3lame, libvorbis, aac) on PATH
+    python make_fixtures.py               # reuses fixtures/audio/*, so hashes stay stable
+    python make_fixtures.py --fresh-audio # regenerate the audio too (needs ffmpeg with
+                                          # libmp3lame, libvorbis, aac); changes every hash
 
 You normally never run this: the fixtures are committed. It exists so anyone can see
 exactly how each one was made, and regenerate them if FORMAT.md changes.
@@ -35,7 +37,12 @@ GEN = ("make_fixtures", "1")
 FIXED_TIME = "2026-11-12T00:00:00Z"
 
 
+FRESH_AUDIO = "--fresh-audio" in sys.argv
+
+
 def ff(args: list[str], out: Path) -> Path:
+    if out.exists() and not FRESH_AUDIO:
+        return out   # keep committed audio byte-for-byte (Ogg/AAC encodes aren't reproducible)
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args, str(out)], check=True)
     return out
 
@@ -106,12 +113,14 @@ def manifest_bytes(m: dict) -> bytes:
     return json.dumps(m, indent=2).encode("utf-8")
 
 
-def build(name: str, show: dict, cues: list, files: dict, normalise_expectation: bool = True) -> dict:
+def build(name: str, show: dict | None, cues: list, files: dict, normalise_expectation: bool = True,
+          kind: str = "show", groups: list | None = None) -> dict:
     VALID.mkdir(parents=True, exist_ok=True)
-    m = tqs.write_package(VALID / f"{name}.tqs", show, cues, files, generator=GEN)
+    path = VALID / f"{name}{tqs.EXTENSIONS[kind]}"
+    tqs.write_package(path, show, cues, files, generator=GEN, kind=kind, groups=groups)
     # Pin exported_at so the committed fixtures don't change on every rebuild.
-    _rewrite_manifest(VALID / f"{name}.tqs", lambda mm: mm.update(exported_at=FIXED_TIME))
-    got, _ = tqs.read_package(VALID / f"{name}.tqs")
+    _rewrite_manifest(path, lambda mm: mm.update(exported_at=FIXED_TIME))
+    got, _ = tqs.read_package(path)
     if normalise_expectation:
         expected(name, got)
     return got
@@ -140,8 +149,8 @@ def main() -> None:
     a = make_audio()
     index = []
 
-    def ok(name, about):
-        index.append({"file": f"valid/{name}.tqs", "expect": "accept", "about": about,
+    def ok(name, about, ext=".tqs"):
+        index.append({"file": f"valid/{name}{ext}", "expect": "accept", "about": about,
                       "expected": f"expected/{name}.json"})
 
     def bad(name, rule, about):
@@ -220,6 +229,73 @@ def main() -> None:
           {"abcdef123456": a["tone-e330.mp3"]})
     ok("05-from-web", "Has show.source, as the web's package endpoint writes it.")
 
+    # ---- groups (FORMAT.md 2.7) and the .tqc / .tqg kinds (section 6) ----
+    act1 = {"id": "act1", "name": "Act 1", "color": "#3E7BD6"}   # uppercase: readers lowercase it
+    storm = {"id": "storm", "name": "Storm", "color": "#c2449a"}
+    build("06-groups", {"name": "Groups", "author": "", "notes": "", "source": None}, [
+        cue("g01", name="Preshow", asset="t1", loop=True),
+        cue("g02", name="Act 1 opener", asset="t2", group="act1"),
+        cue("g03", "silence", name="Act 1 pause", duration=1.0, group="act1", **{"continue": "after_end"}),
+        cue("g04", name="Act 1 closer", asset="t1", group="act1"),
+        cue("g05", "fadeout", name="Interval fade", duration=2.0),
+        cue("g06", name="Thunder", asset="t2", group="storm"),
+        cue("g07", name="Rain", asset="t1", group="storm", loop=True),
+    ], {"t1": a["tone-a440.wav"], "t2": a["tone-e330.mp3"]}, groups=[act1, storm])
+    ok("06-groups", "A show with two groups and ungrouped cues between them. Group colours are lowercased.")
+
+    build("07-cues", None, [
+        cue("c1", name="Doorbell", asset="bell", volume=0.9, fade_out=0.5),
+        cue("c2", "silence", name="Beat", duration=0.5, **{"continue": "after_end"}),
+        cue("c3", name="Doorbell again", asset="bell"),
+    ], {"bell": a["tone-g392.flac"]}, kind="cues")
+    ok("07-cues", "A .tqc: three cues, two sharing one audio file. No show section, no groups.", ".tqc")
+
+    build("08-group", None, [
+        cue("s1", name="Thunder", asset="thunder", group="storm", fade_in=0.2),
+        cue("s2", name="Rain loop", asset="rain", group="storm", loop=True),
+        cue("s3", "fadeout", name="Storm passes", duration=3.0, group="storm"),
+    ], {"thunder": a["tone-e330.mp3"], "rain": a["tone-c262.ogg"]}, kind="group", groups=[storm])
+    ok("08-group", "A .tqg: one group and its three cues.", ".tqg")
+
+    # 09: groups that need normalising. Readers must produce expected/09-groups-need-normalising.json.
+    p = VALID / "09-groups-need-normalising.tqs"
+    messy_g = {
+        "format": "thorncue.show", "format_version": 1,
+        "generator": {"name": "hand-written", "version": "0"}, "exported_at": FIXED_TIME,
+        "show": {"name": "Messy groups", "author": "", "notes": "", "source": None},
+        "groups": [
+            {"id": "a", "name": "", "color": "blue"},          # empty name -> "Group"; bad colour -> default
+            {"id": "b", "name": "B", "color": "#ABCDEF", "x_icon": "star"},
+            {"id": "empty", "name": "No cues", "color": "#123456"},   # dropped
+        ],
+        "assets": {},
+        "cues": [
+            {"id": "n1", "type": "silence", "group": "a"},
+            {"id": "n2", "type": "silence"},
+            {"id": "n3", "type": "silence", "group": "a"},     # pulled up to follow n1
+            {"id": "n4", "type": "silence", "group": "b"},
+            {"id": "n5", "type": "silence", "group": None},
+        ],
+    }
+    raw_zip(p, [("manifest.json", manifest_bytes(messy_g))])
+    expected("09-groups-need-normalising", tqs.read_package(p)[0])
+    ok("09-groups-need-normalising", "Group cues not next to each other are pulled together; empty group "
+                                     "dropped; empty name and bad colour defaulted. Compare with expected/.")
+
+    p = VALID / "10-cues-with-groups.tqc"
+    data = a["tone-a440.wav"].read_bytes()
+    sha = tqs.hashlib.sha256(data).hexdigest()
+    raw_zip(p, [("manifest.json", manifest_bytes({
+        "format": "thorncue.cues", "format_version": 1, "generator": {"name": "x", "version": "1"},
+        "exported_at": FIXED_TIME,
+        "show": {"name": "Ignored in a .tqc"},
+        "groups": [{"id": "g", "name": "Ignored", "color": "#123456"}],
+        "assets": {"t": {"path": "audio/t.wav", "sha256": sha, "bytes": len(data)}},
+        "cues": [{"id": "q", "type": "audio", "name": "Tone", "asset": "t", "group": "g"}],
+    })), ("audio/t.wav", data, zipfile.ZIP_STORED)])
+    expected("10-cues-with-groups", tqs.read_package(p)[0])
+    ok("10-cues-with-groups", "A .tqc with a stray show section and groups: readers ignore both.", ".tqc")
+
     # ---------------- invalid ----------------
     good = json.loads((EXPECTED / "01-minimal.json").read_text())
     good = {"format": "thorncue.show", "format_version": 1, "generator": {"name": "x", "version": "1"},
@@ -238,8 +314,33 @@ def main() -> None:
         raw_zip(INVALID / name, entries)
         bad(name, rule, about)
 
-    variant("bad-format-name.tqs", "2.1 format", "format is not thorncue.show",
-            lambda m: m.update(format="thorncue.cues"))
+    variant("bad-format-name.tqs", "2.1 format", "format is an unknown name (thorncue.playlist)",
+            lambda m: m.update(format="thorncue.playlist"))
+    variant("group-unknown-ref.tqs", "2.7 groups", "a cue is in a group that isn't in groups",
+            lambda m: m["cues"][0].update(group="nope"))
+    variant("group-duplicate-id.tqs", "2.7 groups", "two groups with the id g",
+            lambda m: (m.update(groups=[{"id": "g", "name": "A", "color": "#123456"},
+                                        {"id": "g", "name": "B", "color": "#123456"}]),
+                       m["cues"][0].update(group="g")))
+    variant("group-bad-id.tqs", "2.7 groups", "group id with capitals and a space",
+            lambda m: (m.update(groups=[{"id": "Act 1", "name": "A", "color": "#123456"}]),
+                       m["cues"][0].update(group="Act 1")))
+    variant("groups-not-a-list.tqs", "2.7 groups", "groups is an object",
+            lambda m: m.update(groups={"id": "g"}))
+
+    def tqg(m, groups, cue_groups):
+        m.update(format="thorncue.group", groups=groups)
+        m.pop("show")
+        for c, g in zip(m["cues"], cue_groups):
+            c["group"] = g
+    G1 = {"id": "g1", "name": "One", "color": "#123456"}
+    G2 = {"id": "g2", "name": "Two", "color": "#123456"}
+    variant("tqg-two-groups.tqg", "6.3 .tqg", "a .tqg with two groups",
+            lambda m: tqg(m, [G1, G2], ["g1"]))
+    variant("tqg-cue-outside-group.tqg", "6.3 .tqg", "a .tqg whose cue isn't in the group",
+            lambda m: tqg(m, [G1], [None]))
+    variant("tqg-no-cues.tqg", "6.3 .tqg", "a .tqg with a group and no cues",
+            lambda m: (tqg(m, [G1], []), m.update(cues=[], assets={})), drop_audio=True)
     variant("future-version.tqs", "2.1 format_version", "format_version 2: must say 'update ThornCue'",
             lambda m: m.update(format_version=2))
     variant("unknown-cue-type.tqs", "2.6 unknown enum", "cue type 'midi'",

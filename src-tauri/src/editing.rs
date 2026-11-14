@@ -90,6 +90,30 @@ fn audio_cue(id: &str, name: &str, asset: &str) -> Value {
     })
 }
 
+fn group_of(cue: Option<&Value>) -> Option<&str> {
+    cue.and_then(|c| c.get("group")).and_then(Value::as_str)
+}
+
+/// Which group a cue belongs to once it is dropped at `to` in `cues` (the list without it).
+///
+/// A group's cues must stay consecutive (FORMAT.md 2.7); if a move left them apart, the next
+/// read would pull them back together and the cue would jump away from where it was put. So
+/// membership follows where the cue lands:
+/// - between two cues of one group: it joins that group;
+/// - next to a cue of its own group (inside or at either end): it stays;
+/// - it was its group's only cue: it keeps the group, so the group isn't lost;
+/// - anywhere else: it leaves its group.
+fn group_after_move(cues: &[Value], cue: &Value, to: usize) -> Option<String> {
+    let prev = to.checked_sub(1).and_then(|j| group_of(cues.get(j)));
+    let next = group_of(cues.get(to));
+    if prev.is_some() && prev == next {
+        return prev.map(String::from);
+    }
+    let own = group_of(Some(cue))?;
+    let alone = !cues.iter().any(|c| group_of(Some(c)) == Some(own));
+    (alone || prev == Some(own) || next == Some(own)).then(|| own.to_string())
+}
+
 /// Apply `edit`. Returns the new manifest and the id of the cue to inspect next, if any.
 pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String>), String> {
     let mut v = serde_json::to_value(manifest).map_err(|e| e.to_string())?;
@@ -112,8 +136,15 @@ pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String
             Edit::Move { id, to } => {
                 let cues = obj["cues"].as_array_mut().expect("cues");
                 let i = cue_index(cues, &id)?;
-                let c = cues.remove(i);
-                cues.insert(to.min(cues.len()), c);
+                let mut c = cues.remove(i);
+                let to = to.min(cues.len());
+                match group_after_move(cues, &c, to) {
+                    Some(g) => c["group"] = json!(g),
+                    None => {
+                        c.as_object_mut().expect("cue").remove("group");
+                    }
+                }
+                cues.insert(to, c);
                 focus = Some(id);
             }
             Edit::AddAudio(files) => {
@@ -330,6 +361,232 @@ mod tests {
             .is_err(),
             "type can't change"
         );
+    }
+
+    /// Fixture 06's cues and groups: g01 | act1: g02 g03 g04 | g05 | storm: g06 g07.
+    fn grouped_show() -> Manifest {
+        let dir = tempfile::tempdir().unwrap();
+        tqs::read_package(
+            &fixture("valid/06-groups.tqs"),
+            &dir.path().join("s"),
+            tqs::Limits::default(),
+        )
+        .unwrap()
+        .0
+    }
+
+    fn layout(m: &Manifest) -> Vec<String> {
+        m.cues
+            .iter()
+            .map(|c| match &c.group {
+                Some(g) => format!("{}:{g}", c.id),
+                None => c.id.clone(),
+            })
+            .collect()
+    }
+
+    fn mv(m: &Manifest, id: &str, to: usize) -> Manifest {
+        apply(m, Edit::Move { id: id.into(), to }).unwrap().0
+    }
+
+    #[test]
+    fn fixture_06_layout() {
+        let m = grouped_show();
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g02:act1",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+    }
+
+    /// Every edit keeps the groups (a group-free editor used to be able to split them, and a
+    /// 1.1 reader would then reorder the show to put them back together).
+    #[test]
+    fn edits_keep_groups() {
+        let m = grouped_show();
+        let (u, _) = apply(
+            &m,
+            Edit::Update {
+                id: "g03".into(),
+                patch: patch(json!({"volume": 0.5})),
+            },
+        )
+        .unwrap();
+        assert_eq!(u.groups, m.groups);
+        assert_eq!(layout(&u), layout(&m));
+
+        let (d, new) = apply(&m, Edit::Duplicate { id: "g04".into() }).unwrap();
+        assert_eq!(
+            d.cues[4].group.as_deref(),
+            Some("act1"),
+            "a copy stays in the group"
+        );
+        assert_eq!(d.cues[4].id, new.unwrap());
+
+        let (a, _) = apply(&m, Edit::AddControl { silence: true }).unwrap();
+        assert_eq!(
+            a.cues.last().unwrap().group,
+            None,
+            "new cues go at the end, ungrouped"
+        );
+        assert_eq!(a.groups, m.groups);
+
+        let (n, _) = apply(&m, Edit::ShowName("Renamed".into())).unwrap();
+        assert_eq!(n.groups, m.groups);
+        assert_eq!(layout(&n), layout(&m));
+    }
+
+    #[test]
+    fn moving_a_cue_out_of_its_group_leaves_it() {
+        // g03 to the very top: the show order is exactly what was asked for.
+        let m = mv(&grouped_show(), "g03", 0);
+        assert_eq!(
+            layout(&m),
+            [
+                "g03",
+                "g01",
+                "g02:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+        // g02 between g05 and g06, next to neither of its own: leaves.
+        let m = mv(&grouped_show(), "g02", 4);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g02",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+    }
+
+    #[test]
+    fn moving_a_cue_into_a_group_joins_it() {
+        // g05 between g06 and g07.
+        let m = mv(&grouped_show(), "g05", 5);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g02:act1",
+                "g03:act1",
+                "g04:act1",
+                "g06:storm",
+                "g05:storm",
+                "g07:storm"
+            ]
+        );
+        // g02 between g06 and g07: joins Storm, Act 1 keeps its other cues.
+        let m = mv(&grouped_show(), "g02", 5);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g02:storm",
+                "g07:storm"
+            ]
+        );
+    }
+
+    #[test]
+    fn moving_within_or_to_the_edge_of_its_group_keeps_it() {
+        // `to` counts in the list without the moved cue: 2 is between g03 and g04.
+        let m = mv(&grouped_show(), "g02", 2);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g03:act1",
+                "g02:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+        // Right after its group's last cue: still in it.
+        let m = mv(&grouped_show(), "g02", 3);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g03:act1",
+                "g04:act1",
+                "g02:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+        // g06 to after g07, the end of the show.
+        let m = mv(&grouped_show(), "g06", 6);
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g02:act1",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g07:storm",
+                "g06:storm"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_groups_only_cue_takes_the_group_with_it() {
+        let mut m = grouped_show();
+        for id in ["g03", "g04"] {
+            m = apply(&m, Edit::Delete { id: id.into() }).unwrap().0;
+        }
+        let m = mv(&m, "g02", 4);
+        assert_eq!(
+            layout(&m),
+            ["g01", "g05", "g06:storm", "g07:storm", "g02:act1"]
+        );
+        assert_eq!(m.groups.len(), 2);
+    }
+
+    #[test]
+    fn deleting_a_groups_last_cue_drops_the_group() {
+        let mut m = grouped_show();
+        for id in ["g06", "g07"] {
+            m = apply(&m, Edit::Delete { id: id.into() }).unwrap().0;
+        }
+        assert_eq!(m.groups.len(), 1);
+        assert_eq!(m.groups[0].id, "act1");
+    }
+
+    #[test]
+    fn group_membership_isnt_an_inspector_field() {
+        let r = apply(
+            &grouped_show(),
+            Edit::Update {
+                id: "g01".into(),
+                patch: patch(json!({"group": "storm"})),
+            },
+        );
+        assert!(r.is_err());
     }
 
     #[test]
