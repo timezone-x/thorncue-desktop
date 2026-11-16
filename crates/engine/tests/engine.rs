@@ -1775,3 +1775,86 @@ fn the_ui_hears_when_a_pre_wait_ends_without_any_other_change() {
         .expect("a state event once the pre-wait ended");
     assert_eq!(last.running[0].phase, RunPhase::Running);
 }
+
+// ---------------------------------------------------------------------------
+// thorncue-spec#5: the trim editor's gain line is what plays
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_drawn_fade_curve_is_the_gain_that_plays() {
+    // Trim 1-9, cut 4-6 (edited length 6 s), fade in 1.5 s, fade out 2.5 s, volume 1.
+    let mut c = dc("a");
+    c.trim_start = 1.0;
+    c.trim_end = Some(9.0);
+    c.cuts = vec![[4.0, 6.0]];
+    c.fade_in = 1.5;
+    c.fade_out = 2.5;
+    let (mut core, _rx) = ready_core(vec![c.clone()]);
+    core.handle(Command::Go);
+    let played = render(&mut core, 6.5);
+
+    let shape = engine::FadeShape {
+        trim_start: c.trim_start,
+        trim_end: c.trim_end,
+        cuts: c.cuts.clone(),
+        fade_in: c.fade_in,
+        fade_out: c.fade_out,
+        looping: false,
+    };
+    // One column per 50 ms of the 10 s file.
+    let curve = engine::fade_curve(&shape, 10.0, 200);
+    let segs = engine::kept_segments(1.0, Some(9.0), &[[4.0, 6.0]], 10.0);
+    let mut checked = 0;
+    for (col, g) in curve.iter().enumerate() {
+        let src = (col as f64 + 0.5) * 0.05;
+        let in_cut_or_trim = !segs.iter().any(|&(s, e)| src >= s && src <= e);
+        if in_cut_or_trim {
+            assert!(g.is_none(), "column {col} ({src} s) doesn't play");
+            continue;
+        }
+        let g = g.expect("plays");
+        // Where that source time lands in the edited audio, and what playback did there.
+        let mut played_t = 0.0;
+        for &(s, e) in &segs {
+            if src <= e {
+                played_t += src - s;
+                break;
+            }
+            played_t += e - s;
+        }
+        let sample = (played_t * RATE as f64).round() as usize;
+        // Skip the 4 ms join ramps at the cut.
+        if (played_t - 3.0).abs() < 0.01 {
+            continue;
+        }
+        let rung_value = rung(src.floor() as u32);
+        if rung_value == 0.0 {
+            continue;
+        }
+        let gain_played = played[sample] / rung_value;
+        assert!(
+            (gain_played - g).abs() < 2e-3,
+            "{src} s: drawn {g}, played {gain_played}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 100, "only {checked} columns checked");
+}
+
+#[test]
+fn a_looping_cue_draws_no_fade_out() {
+    let shape = engine::FadeShape {
+        trim_start: 0.0,
+        trim_end: None,
+        cuts: vec![],
+        fade_in: 1.0,
+        fade_out: 3.0,
+        looping: true,
+    };
+    let curve = engine::fade_curve(&shape, 10.0, 10);
+    assert!(
+        (curve[0].unwrap() - 0.5).abs() < 1e-6,
+        "halfway up the fade-in"
+    );
+    assert_eq!(curve[9], Some(1.0), "no fade-out while looping");
+}

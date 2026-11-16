@@ -293,6 +293,19 @@ pub fn audition(id: String, from: f64, state: State<'_, AppState>) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// The trim editor's gain line (thorncue-spec#5), from playback's own fade envelope.
+#[tauri::command]
+pub fn fade_curve(
+    shape: engine::FadeShape,
+    duration: f64,
+    columns: usize,
+) -> Result<Vec<Option<f32>>, String> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Ok(Vec::new());
+    }
+    Ok(engine::fade_curve(&shape, duration, columns.min(16_384)))
+}
+
 #[tauri::command]
 pub fn stop_audition(state: State<'_, AppState>) -> Result<(), String> {
     state

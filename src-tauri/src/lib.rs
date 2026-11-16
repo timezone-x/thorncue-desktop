@@ -137,6 +137,7 @@ pub fn run() {
             edit_cmds::get_peaks,
             edit_cmds::audition,
             edit_cmds::stop_audition,
+            edit_cmds::fade_curve,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting ThornCue")

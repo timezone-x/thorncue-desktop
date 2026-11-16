@@ -13,12 +13,34 @@
   import { onMount } from "svelte";
   import { errorText, trimApi, type Cue, type CuePatch } from "../lib/api";
   import { engine } from "../lib/engine.svelte";
-  import { MIN_LEN, clamp, keptSegments, mergeCuts, outPoint, r4, segmentsLength, type EditFields } from "../lib/edits";
+  import {
+    MIN_LEN,
+    clamp,
+    keptSegments,
+    mergeCuts,
+    outPoint,
+    r4,
+    segmentsLength,
+    toPlayedTime,
+    toSourceTime,
+    type EditFields,
+  } from "../lib/edits";
   import { fmtTime } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
   import { auditionBlocked, checkAudition } from "../lib/outputs.svelte";
 
-  let { cue, index, onEdit }: { cue: Cue; index: number; onEdit: (id: string, patch: CuePatch) => void } = $props();
+  let {
+    cue,
+    index,
+    onEdit,
+    draftFades = $bindable(null),
+  }: {
+    cue: Cue;
+    index: number;
+    onEdit: (id: string, patch: CuePatch) => void;
+    /** While a fade handle is dragged: the fades as they will be, for the inspector's fields. */
+    draftFades?: { fade_in: number; fade_out: number } | null;
+  } = $props();
 
   let canvas: HTMLCanvasElement;
   let peaks = $state<Peaks | null>(null);
@@ -30,7 +52,10 @@
   let undoCount = $state(0);
   let colour = $state<Record<string, string>>({});
 
-  const edits = $derived<EditFields>(draft ?? { trim_start: cue.trim_start, trim_end: cue.trim_end, cuts: cue.cuts });
+  const edits = $derived<EditFields>(
+    draft ?? { trim_start: cue.trim_start, trim_end: cue.trim_end, cuts: cue.cuts, fade_in: cue.fade_in, fade_out: cue.fade_out },
+  );
+  const looping = $derived(cue.loop);
   const dur = $derived(peaks?.duration ?? 0);
   // Primitive deriveds: every edit hands us a new `cue` object, and effects that read these
   // only re-run when the cue or its file actually changes (not after each edit).
@@ -69,6 +94,33 @@
     );
   });
 
+  // ---- The gain line (thorncue-spec#5): computed in Rust by playback's own envelope ----
+
+  let curve = $state<(number | null)[] | null>(null);
+  let curveSeq = 0;
+  let canvasW = $state(0);
+
+  $effect(() => {
+    const shape = {
+      trim_start: edits.trim_start,
+      trim_end: edits.trim_end,
+      cuts: edits.cuts,
+      fade_in: edits.fade_in,
+      fade_out: edits.fade_out,
+      loop: looping,
+    };
+    const d = dur;
+    const w = canvasW;
+    if (!peaks || !d || !w) return;
+    const seq = ++curveSeq;
+    trimApi.fadeCurve(shape, d, w).then(
+      (c) => {
+        if (seq === curveSeq) curve = c;
+      },
+      () => {},
+    );
+  });
+
   // ---- Drawing ----
 
   function readColours() {
@@ -89,7 +141,10 @@
     // The canvas reads its colours from the theme; repaint when the theme changes.
     const themeWatch = new MutationObserver(readColours);
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    const sizeWatch = new ResizeObserver(() => draw());
+    const sizeWatch = new ResizeObserver(() => {
+      canvasW = Math.max(1, Math.round(canvas.clientWidth * (window.devicePixelRatio || 1)));
+      draw();
+    });
     sizeWatch.observe(canvas);
     return () => {
       themeWatch.disconnect();
@@ -99,7 +154,7 @@
 
   $effect(() => {
     // Redraw whenever anything it shows changes.
-    void [peaks, edits, marker, sel, playhead, colour, loadError];
+    void [peaks, edits, marker, sel, playhead, colour, loadError, curve];
     draw();
   });
 
@@ -142,6 +197,7 @@
       g.fillRect(x, top, 1, bot - top);
     }
     const X = (t: number) => Math.round((t / dur) * w);
+    drawFades(g, segs, w, h, dpr);
     if (sel) {
       g.fillStyle = colour.selection;
       g.fillRect(X(sel[0]), 0, Math.max(1, X(sel[1]) - X(sel[0])), h);
@@ -164,11 +220,94 @@
       g.fillStyle = colour.playhead;
       g.fillRect(X(playhead), 0, 2 * dpr, h);
     }
+    drawFadeHandles(g, segs, w, dpr);
+  }
+
+  // Fades on the waveform (as the web): the audio a fade turns down is dimmed, the gain is a
+  // line, and each fade has a round handle just under its marker's tab, dragged inwards.
+  const FADE_HANDLE_Y = 18; // CSS px from the top
+  const FADE_HANDLE_R = 5;
+
+  function fadeHandleTimes(segs: [number, number][]) {
+    const len = segmentsLength(segs);
+    return {
+      len,
+      inAt: toSourceTime(segs, Math.min(edits.fade_in, len)),
+      outAt: toSourceTime(segs, Math.max(0, len - Math.min(edits.fade_out, len))),
+    };
+  }
+
+  function drawFades(g: CanvasRenderingContext2D, segs: [number, number][], w: number, h: number, dpr: number) {
+    if (!segs.length || !curve || !curve.length) return;
+    const col = (x: number) => curve![Math.min(curve!.length - 1, Math.floor((x / w) * curve!.length))];
+    g.save();
+    g.globalAlpha = 0.6;
+    g.fillStyle = colour.bg;
+    for (let x = 0; x < w; x++) {
+      const gain = col(x);
+      if (gain != null && gain < 1) g.fillRect(x, 0, 1, Math.round((1 - gain) * h));
+    }
+    g.globalAlpha = 1;
+    g.strokeStyle = colour.marker;
+    g.lineWidth = 1.5 * dpr;
+    g.beginPath();
+    let pen = false;
+    for (let x = 0; x < w; x++) {
+      const gain = col(x);
+      if (gain == null || gain >= 1) {
+        pen = false;
+        continue;
+      }
+      const y = (1 - gain) * h;
+      if (pen) g.lineTo(x, y);
+      else {
+        g.moveTo(x, y);
+        pen = true;
+      }
+    }
+    g.stroke();
+    g.restore();
+  }
+
+  function drawFadeHandles(g: CanvasRenderingContext2D, segs: [number, number][], w: number, dpr: number) {
+    if (!segs.length) return;
+    const { inAt, outAt } = fadeHandleTimes(segs);
+    const X = (t: number) => clamp(Math.round((t / dur) * w), 0, w);
+    g.save();
+    // The fade-out handle is dimmed while the cue loops: the fade-out isn't used then.
+    for (const [t, dim] of [
+      [inAt, false],
+      [outAt, looping],
+    ] as const) {
+      g.globalAlpha = dim ? 0.4 : 1;
+      const r = FADE_HANDLE_R * dpr;
+      g.beginPath();
+      g.arc(clamp(X(t), r + dpr, w - r - dpr), FADE_HANDLE_Y * dpr, r, 0, Math.PI * 2);
+      g.fillStyle = colour.marker;
+      g.fill();
+      g.lineWidth = 1.5 * dpr;
+      g.strokeStyle = colour.bg;
+      g.stroke();
+    }
+    g.restore();
   }
 
   // ---- Edits, undo ----
 
-  const snapshotOf = (e: EditFields): EditFields => ({ trim_start: e.trim_start, trim_end: e.trim_end, cuts: e.cuts.map((p) => [...p] as [number, number]) });
+  const snapshotOf = (e: EditFields): EditFields => ({
+    trim_start: e.trim_start,
+    trim_end: e.trim_end,
+    cuts: e.cuts.map((p) => [...p] as [number, number]),
+    fade_in: e.fade_in,
+    fade_out: e.fade_out,
+  });
+  const patchOf = (e: EditFields): CuePatch => ({
+    trim_start: e.trim_start,
+    trim_end: e.trim_end,
+    cuts: e.cuts,
+    fade_in: e.fade_in,
+    fade_out: e.fade_out,
+  });
   const same = (a: EditFields, b: EditFields) => JSON.stringify(a) === JSON.stringify(b);
 
   function commit(next: EditFields, before: EditFields) {
@@ -178,7 +317,7 @@
     if (stack.length > 100) stack.shift();
     undoStacks.set(cue.id, stack);
     undoCount = stack.length;
-    onEdit(cue.id, { trim_start: next.trim_start, trim_end: next.trim_end, cuts: next.cuts });
+    onEdit(cue.id, patchOf(next));
   }
 
   export function undo() {
@@ -186,7 +325,7 @@
     const prev = stack?.pop();
     if (!prev) return;
     undoCount = stack!.length;
-    onEdit(cue.id, { trim_start: prev.trim_start, trim_end: prev.trim_end, cuts: prev.cuts });
+    onEdit(cue.id, patchOf(prev));
   }
 
   /** Where I and O set a point: the audition playhead if auditioning, else the marker. */
@@ -244,7 +383,7 @@
 
   function restore() {
     const before = snapshotOf(edits);
-    commit({ trim_start: 0, trim_end: null, cuts: [] }, before);
+    commit({ ...before, trim_start: 0, trim_end: null, cuts: [] }, before);
     showToast(`Q${index + 1} plays the full file again. Undo brings the edits back.`);
   }
 
@@ -265,17 +404,32 @@
   // ---- Pointer: drag a marker, drag to select, click to place the marker ----
 
   const HANDLE_PX = 8;
-  let drag: { kind: "in" | "out"; before: EditFields } | { kind: "select"; anchor: number; startX: number; moved: boolean } | null = null;
+  let drag:
+    | { kind: "in" | "out" | "fadein" | "fadeout"; before: EditFields }
+    | { kind: "select"; anchor: number; startX: number; moved: boolean }
+    | null = null;
 
   function xToTime(clientX: number) {
     const r = canvas.getBoundingClientRect();
     return clamp((clientX - r.left) / r.width, 0, 1) * dur;
   }
 
-  function handleAt(clientX: number): "in" | "out" | null {
+  function handleAt(clientX: number, clientY: number): "in" | "out" | "fadein" | "fadeout" | null {
     const r = canvas.getBoundingClientRect();
     const x = clientX - r.left;
     const at = (t: number) => (t / dur) * r.width;
+    // Fade handles first: they sit under the in/out tabs and may overlap the markers.
+    const segs = keptSegments(edits, dur);
+    if (segs.length) {
+      const { inAt, outAt } = fadeHandleTimes(segs);
+      const y = clientY - r.top;
+      const near = (t: number) => Math.hypot(x - at(t), y - FADE_HANDLE_Y) <= FADE_HANDLE_R + 5;
+      const nIn = near(inAt);
+      const nOut = near(outAt);
+      if (nIn && nOut) return Math.abs(x - at(inAt)) <= Math.abs(x - at(outAt)) ? "fadein" : "fadeout";
+      if (nIn) return "fadein";
+      if (nOut) return "fadeout";
+    }
     const dIn = Math.abs(x - at(edits.trim_start));
     const dOut = Math.abs(x - at(outPoint(edits, dur)));
     if (Math.min(dIn, dOut) > HANDLE_PX) return null;
@@ -286,18 +440,39 @@
     if (!peaks) return;
     canvas.setPointerCapture(e.pointerId);
     canvas.focus();
-    const h = handleAt(e.clientX);
+    const h = handleAt(e.clientX, e.clientY);
     drag = h ? { kind: h, before: snapshotOf(edits) } : { kind: "select", anchor: xToTime(e.clientX), startX: e.clientX, moved: false };
   }
 
   function onPointerMove(e: PointerEvent) {
     if (!peaks) return;
     if (!drag) {
-      canvas.style.cursor = handleAt(e.clientX) ? "ew-resize" : "crosshair";
+      const h = handleAt(e.clientX, e.clientY);
+      canvas.style.cursor = h === "fadein" || h === "fadeout" ? "grab" : h ? "ew-resize" : "crosshair";
+      canvas.title =
+        h === "fadein"
+          ? `Fade in ${fmtFade(edits.fade_in)}: drag right to lengthen`
+          : h === "fadeout"
+            ? `Fade out ${fmtFade(edits.fade_out)}${looping ? " (not used while the cue loops)" : ""}: drag left to lengthen`
+            : "";
       return;
     }
     const t = xToTime(e.clientX);
-    if (drag.kind === "in") {
+    if (drag.kind === "fadein" || drag.kind === "fadeout") {
+      const segs = keptSegments(edits, dur);
+      const len = segmentsLength(segs);
+      const p = toPlayedTime(segs, t);
+      // Back onto its marker (within a few pixels): no fade.
+      const r = canvas.getBoundingClientRect();
+      const markerAt = drag.kind === "fadein" ? edits.trim_start : outPoint(edits, dur);
+      const px = Math.abs(e.clientX - r.left - (markerAt / dur) * r.width);
+      const next = snapshotOf(edits);
+      if (drag.kind === "fadein") next.fade_in = px < 4 ? 0 : r4(clamp(p, 0, Math.min(600, len - edits.fade_out)));
+      else next.fade_out = px < 4 ? 0 : r4(clamp(len - p, 0, Math.min(600, len - edits.fade_in)));
+      draft = next;
+      draftFades = { fade_in: next.fade_in, fade_out: next.fade_out };
+      canvas.style.cursor = "grabbing";
+    } else if (drag.kind === "in") {
       draft = { ...snapshotOf(edits), trim_start: r4(clamp(t, 0, outPoint(edits, dur) - MIN_LEN)) };
     } else if (drag.kind === "out") {
       const v = clamp(t, edits.trim_start + MIN_LEN, dur);
@@ -321,9 +496,12 @@
     } else if (draft) {
       const next = draft;
       draft = null;
+      draftFades = null;
       commit(next, d.before);
     }
   }
+
+  const fmtFade = (s: number) => (s > 0 ? `${s.toFixed(s < 10 ? 2 : 1)} s` : "off");
 
   const canRestore = $derived(edits.trim_start > 0 || edits.trim_end != null || edits.cuts.length > 0);
 </script>
@@ -358,5 +536,5 @@
       {/each}
     </ul>
   {/if}
-  <p class="trim__note">The audio file is never changed. Restore full file undoes every trim and cut. Audition plays on the audition output (headphones), never the show output unless you chose that, and keeps playing through Stop all: use Stop audition.</p>
+  <p class="trim__note">The audio file is never changed. Restore full file undoes every trim and cut. Drag the round handles under the markers to fade in or out; drag one back onto its marker for no fade. Audition plays on the audition output (headphones), never the show output unless you chose that, and keeps playing through Stop all: use Stop audition.</p>
 </div>

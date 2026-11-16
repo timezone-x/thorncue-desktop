@@ -277,4 +277,16 @@ export const trimApi = {
   peaks: (id: string) => invoke<Peaks>("get_peaks", { id }),
   audition: (id: string, from: number) => invoke<void>("audition", { id, from }),
   stopAudition: () => invoke<void>("stop_audition"),
+  /** The gain playback applies in each of `columns` slices of the file (null: not played). */
+  fadeCurve: (shape: FadeShape, duration: number, columns: number) =>
+    invoke<(number | null)[]>("fade_curve", { shape, duration, columns }),
 };
+
+export interface FadeShape {
+  trim_start: number;
+  trim_end: number | null;
+  cuts: [number, number][];
+  fade_in: number;
+  fade_out: number;
+  loop: boolean;
+}
