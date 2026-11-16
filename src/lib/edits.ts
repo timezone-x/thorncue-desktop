@@ -8,6 +8,9 @@ export interface EditFields {
   trim_start: number;
   trim_end: number | null;
   cuts: [number, number][];
+  /** Fades are part of the trim editor's undo (thorncue-spec#5). */
+  fade_in: number;
+  fade_out: number;
 }
 
 export const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
@@ -49,4 +52,24 @@ export function mergeCuts(cuts: [number, number][]): [number, number][] {
     else out.push(p);
   }
   return out;
+}
+
+/** Source-file time -> time in the edited audio. Inside a cut or outside the trims: the nearest kept edge. */
+export function toPlayedTime(segs: [number, number][], t: number): number {
+  let acc = 0;
+  for (const [s, e] of segs) {
+    if (t < s) return acc;
+    if (t <= e) return acc + (t - s);
+    acc += e - s;
+  }
+  return acc;
+}
+
+/** Time in the edited audio -> source-file time. */
+export function toSourceTime(segs: [number, number][], t: number): number {
+  for (const [s, e] of segs) {
+    if (t <= e - s) return s + t;
+    t -= e - s;
+  }
+  return segs.length ? segs[segs.length - 1][1] : 0;
 }

@@ -107,13 +107,7 @@ impl EffectBuilder for CueGainBuilder {
             elapsed: AtomicU64::new(0f64.to_bits()),
             phase: AtomicU8::new(GainPhase::Waiting as u8),
         });
-        let fade_out_start = if !self.looping && self.fade_out > 0.0 {
-            // FORMAT.md 2.5.4: if fade-in and fade-out overlap, the fade-out starts where the
-            // fade-in ends (web scheduleGain: max(fade_in, length - fade_out)).
-            Some((self.length - self.fade_out).max(self.fade_in.min(self.length)))
-        } else {
-            None
-        };
+        let fade_out_start = fade_out_start(self.fade_in, self.fade_out, self.length, self.looping);
         let effect = CueGain {
             shared: shared.clone(),
             start: self.start,
@@ -150,24 +144,75 @@ struct CueGain {
     offset: f64,
 }
 
-impl CueGain {
-    /// The scheduled envelope (0..=1) at `t` seconds after the start.
-    fn envelope(&self, t: f64) -> f64 {
-        if let Some(fs) = self.fade_out_start
-            && t >= fs
-        {
-            let span = self.length - fs;
-            return if span > 0.0 {
-                ((self.length - t) / span).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-        }
-        if self.fade_in > 0.0 && t < self.fade_in {
-            return t / self.fade_in;
-        }
-        1.0
+/// Where the scheduled fade-out starts, if there is one. FORMAT.md 2.5.4: if fade-in and
+/// fade-out overlap, the fade-out starts where the fade-in ends (web scheduleGain:
+/// max(fade_in, length - fade_out)); a looping cue has no fade-out.
+fn fade_out_start(fade_in: f64, fade_out: f64, length: f64, looping: bool) -> Option<f64> {
+    (!looping && fade_out > 0.0).then(|| (length - fade_out).max(fade_in.min(length)))
+}
+
+/// The scheduled envelope (0..=1) at `t` seconds into the edited audio. The one definition of
+/// a cue's fades: playback (`CueGain`) and the trim editor's gain line (`fade_curve`) both use it.
+fn envelope(t: f64, fade_in: f64, fade_out_start: Option<f64>, length: f64) -> f64 {
+    if let Some(fs) = fade_out_start
+        && t >= fs
+    {
+        let span = length - fs;
+        return if span > 0.0 {
+            ((length - t) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
+    if fade_in > 0.0 && t < fade_in {
+        return t / fade_in;
+    }
+    1.0
+}
+
+impl CueGain {
+    fn envelope(&self, t: f64) -> f64 {
+        envelope(t, self.fade_in, self.fade_out_start, self.length)
+    }
+}
+
+/// A cue's edit and fades, for drawing its gain on the waveform.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct FadeShape {
+    pub trim_start: f64,
+    pub trim_end: Option<f64>,
+    pub cuts: Vec<[f64; 2]>,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    #[serde(rename = "loop")]
+    pub looping: bool,
+}
+
+/// The gain line for the trim editor (thorncue-spec#5): for each of `columns` equal slices of
+/// the source file (`duration` seconds), the gain playback applies there, through trims and
+/// cuts, or `None` where the audio doesn't play. Computed with playback's own envelope, so
+/// what's drawn is what plays.
+pub fn fade_curve(shape: &FadeShape, duration: f64, columns: usize) -> Vec<Option<f32>> {
+    let segs = crate::edit::kept_segments(shape.trim_start, shape.trim_end, &shape.cuts, duration);
+    let length: f64 = segs.iter().map(|(s, e)| e - s).sum();
+    let fs = fade_out_start(shape.fade_in, shape.fade_out, length, shape.looping);
+    (0..columns)
+        .map(|x| {
+            let t = (x as f64 + 0.5) / columns as f64 * duration;
+            let mut played = 0.0;
+            for &(s, e) in &segs {
+                if t < s {
+                    return None;
+                }
+                if t <= e {
+                    played += t - s;
+                    return Some(envelope(played, shape.fade_in, fs, length) as f32);
+                }
+                played += e - s;
+            }
+            None
+        })
+        .collect()
 }
 
 impl Effect for CueGain {

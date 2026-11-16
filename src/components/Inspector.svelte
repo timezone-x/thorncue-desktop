@@ -79,6 +79,8 @@
 
   const audio = $derived(cue?.type === "audio");
   let trim = $state<ReturnType<typeof Trim>>();
+  /** A fade handle being dragged on the waveform: the fields follow it live. */
+  let draftFades = $state<{ fade_in: number; fade_out: number } | null>(null);
 
   /** I, O, X and Ctrl+Z from the Show screen's keyboard handler. */
   export function trimKey(key: "in" | "out" | "cut" | "undo") {
@@ -156,12 +158,12 @@
             <div class="field-row">
               <div class="field">
                 <label for="f-fadein">Fade in (s)</label>
-                <input type="number" id="f-fadein" min="0" max="600" step="0.1" value={cue.fade_in}
+                <input type="number" id="f-fadein" min="0" max="600" step="0.1" value={draftFades?.fade_in ?? cue.fade_in}
                   onchange={(e) => number("fade_in", e.currentTarget, 600)} />
               </div>
               <div class="field">
                 <label for="f-fadeout">Fade out (s)</label>
-                <input type="number" id="f-fadeout" min="0" max="600" step="0.1" value={cue.fade_out}
+                <input type="number" id="f-fadeout" min="0" max="600" step="0.1" value={draftFades?.fade_out ?? cue.fade_out}
                   onchange={(e) => number("fade_out", e.currentTarget, 600)} />
               </div>
             </div>
@@ -194,7 +196,7 @@
           </div>
         </div>
         {#if audio && cue.asset}
-          <Trim bind:this={trim} {cue} {index} {onEdit} />
+          <Trim bind:this={trim} bind:draftFades {cue} {index} {onEdit} />
         {/if}
       </div>
     {/key}

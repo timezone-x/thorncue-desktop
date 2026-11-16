@@ -19,6 +19,7 @@ pub use backend::{
 };
 pub use core::{AuditionOpener, Command, Core, ManagerFactory, Options, OutputSetup};
 pub use edit::kept_segments;
+pub use gain::{FadeShape, fade_curve};
 pub use kira;
 pub use outputs::{
     AuditionBlock, AuditionOutput, AuditionRoute, DeviceList, OutputDevice, ShowOutput, ShowRoute,
