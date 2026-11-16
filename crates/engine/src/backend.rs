@@ -1,6 +1,8 @@
-//! Backends the engine can run on: cpal for real output, `TestBackend` for tests.
+//! Backends the engine can run on: kira's cpal backend for the show, `AuditionBackend` for
+//! the audition output, `TestBackend` for tests.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use kira::backend::cpal::CpalBackend;
 use kira::backend::{Backend, Renderer};
@@ -136,5 +138,163 @@ impl EngineBackend for TestBackend {
 
     fn watch_for_stalls(&self) -> bool {
         self.watch_for_stalls
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The audition output
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+use kira::backend::cpal::cpal;
+
+const STREAM_OK: u8 = 0;
+const STREAM_DEVICE_GONE: u8 = 1;
+
+/// Which device the audition stream opens. `None` = the system default (only ever used when
+/// the operator chose "Same as show output" and the show is on the default).
+#[derive(Debug, Clone, Default)]
+pub struct AuditionBackendSettings {
+    pub device_id: Option<String>,
+}
+
+/// The audition output: one cpal stream on exactly the chosen device.
+///
+/// Not kira's `CpalBackend`, because that one reopens a lost stream on the *system default*
+/// device (kira `stream_manager.rs` `check_stream`), even when it was given a device. For the
+/// show that's right (keep playing); for an audition it would be a silent reroute, possibly
+/// to the show's speakers (thorncue-spec#9). Here a lost device means silence, and the engine
+/// stops the audition and blocks auditions until the device is back.
+///
+/// The stream lives on its own thread (cpal streams aren't `Send` everywhere), so this
+/// backend, and the `AudioManager` holding it, can be opened off the engine thread.
+pub struct AuditionBackend {
+    device_id: Option<String>,
+    config: cpal::StreamConfig,
+    state: Arc<AtomicU8>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+fn open_device(device_id: &Option<String>) -> Result<cpal::Device, String> {
+    use cpal::traits::HostTrait;
+    match device_id {
+        Some(id) => {
+            crate::outputs::cpal_device(id).ok_or_else(|| "the device isn't connected.".to_string())
+        }
+        None => cpal::default_host()
+            .default_output_device()
+            .ok_or_else(|| "there is no default output.".to_string()),
+    }
+}
+
+impl Backend for AuditionBackend {
+    type Settings = AuditionBackendSettings;
+    type Error = String;
+
+    fn setup(settings: Self::Settings, _buffer: usize) -> Result<(Self, u32), Self::Error> {
+        use cpal::traits::DeviceTrait;
+        let device = open_device(&settings.device_id)?;
+        let config = device
+            .default_output_config()
+            .map_err(|e| format!("it has no usable output format ({e})."))?
+            .config();
+        let rate = config.sample_rate;
+        Ok((
+            Self {
+                device_id: settings.device_id,
+                config,
+                state: Arc::new(AtomicU8::new(STREAM_OK)),
+                stop: Arc::new(AtomicBool::new(false)),
+                thread: None,
+            },
+            rate,
+        ))
+    }
+
+    fn start(&mut self, mut renderer: Renderer) -> Result<(), Self::Error> {
+        use cpal::traits::{DeviceTrait, StreamTrait};
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+        let device_id = self.device_id.clone();
+        let config = self.config;
+        let state = self.state.clone();
+        let stop = self.stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("thorncue-audition-output".into())
+            .spawn(move || {
+                let opened = open_device(&device_id).and_then(|device| {
+                    let channels = config.channels;
+                    let st = state.clone();
+                    let st_err = state.clone();
+                    let stream = device
+                        .build_output_stream(
+                            config,
+                            move |data: &mut [f32], _| {
+                                // Audio thread: no allocation, locks or logging here.
+                                if st.load(Ordering::Relaxed) != STREAM_OK {
+                                    data.fill(0.0);
+                                    return;
+                                }
+                                renderer.on_start_processing();
+                                renderer.process(data, channels);
+                            },
+                            move |e| {
+                                if matches!(
+                                    e.kind(),
+                                    cpal::ErrorKind::DeviceNotAvailable
+                                        | cpal::ErrorKind::StreamInvalidated
+                                ) {
+                                    st_err.store(STREAM_DEVICE_GONE, Ordering::Relaxed);
+                                }
+                            },
+                            None,
+                        )
+                        .map_err(|e| format!("its stream wouldn't open ({e})."))?;
+                    stream
+                        .play()
+                        .map_err(|e| format!("its stream wouldn't start ({e})."))?;
+                    Ok(stream)
+                });
+                match opened {
+                    Ok(stream) => {
+                        let _ = ready_tx.send(Ok(()));
+                        while !stop.load(Ordering::Acquire) {
+                            std::thread::park_timeout(Duration::from_millis(200));
+                        }
+                        drop(stream);
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                    }
+                }
+            })
+            .map_err(|e| format!("couldn't start its thread ({e})."))?;
+        self.thread = Some(thread);
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| Err("it didn't answer in time.".into()))
+    }
+}
+
+impl Drop for AuditionBackend {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(t) = self.thread.take() {
+            t.thread().unpark();
+            let _ = t.join();
+        }
+    }
+}
+
+impl EngineBackend for AuditionBackend {
+    fn take_device_error(&mut self) -> Option<String> {
+        (self.state.load(Ordering::Relaxed) == STREAM_DEVICE_GONE)
+            .then(|| "the device was disconnected.".to_string())
+    }
+
+    fn watch_for_stalls(&self) -> bool {
+        false
     }
 }

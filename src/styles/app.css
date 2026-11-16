@@ -550,3 +550,7 @@ input[type=radio] { width: 16px; height: 16px; min-height: 0; margin: 0; padding
 .cue-table td.c-grip { cursor: grab; touch-action: none; user-select: none; }
 .cue-row.is-dragging td.c-grip { cursor: grabbing; }
 .save-state:empty { display: none; }
+
+/* An action that can't run now (thorncue-spec#9: blocked auditions). Still clickable, so it can
+   say why; dimmed and marked with ⊘, never colour alone. */
+.btn.is-blocked { opacity: 0.6; border-style: dashed; }

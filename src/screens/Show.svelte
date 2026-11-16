@@ -21,6 +21,7 @@
   import { showToast } from "../lib/toast.svelte";
   import { syncValue } from "../lib/sync";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import OutputsBar from "../components/OutputsBar.svelte";
   import Inspector from "../components/Inspector.svelte";
 
   let {
@@ -412,6 +413,8 @@
     <button type="button" class="btn" onclick={exportShow}>Export .tqs</button>
     <button type="button" class="btn" onclick={duplicateShow}>Duplicate show</button>
   </header>
+
+  <OutputsBar />
 
   <section class="transport" aria-label="Transport">
     <button type="button" class="transport__go" aria-keyshortcuts="Space" onclick={go}>GO</button>

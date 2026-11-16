@@ -88,6 +88,8 @@ pub struct Snapshot {
     pub decoded_bytes: u64,
     /// Master volume, linear 0..=1.
     pub master: f64,
+    /// Show and audition outputs, for the outputs bar.
+    pub outputs: OutputsState,
 }
 
 impl Snapshot {
@@ -106,6 +108,7 @@ impl Snapshot {
             prep_total: 0,
             decoded_bytes: 0,
             master: 1.0,
+            outputs: OutputsState::default(),
         }
     }
 }
@@ -134,8 +137,63 @@ pub struct Notice {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// A few of these a second at most; boxing the snapshot would buy nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     State(Snapshot),
     Positions(Vec<Position>),
     Notice(Notice),
+}
+
+/// The outputs bar (thorncue-spec#9).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OutputsState {
+    pub show_choice: crate::outputs::ShowOutput,
+    pub audition_choice: crate::outputs::AuditionOutput,
+    /// What the show is playing on.
+    pub show: crate::outputs::ShowRoute,
+    pub audition: AuditionState,
+    /// Linear amplitude 0..=1, separate from the master.
+    pub audition_volume: f64,
+    pub devices: Vec<crate::outputs::OutputDevice>,
+    /// Id of the system default output, if known.
+    pub default_device: Option<String>,
+}
+
+impl Default for OutputsState {
+    fn default() -> Self {
+        Self {
+            show_choice: Default::default(),
+            audition_choice: Default::default(),
+            show: crate::outputs::ShowRoute {
+                device: None,
+                name: "System default".into(),
+                fallback: false,
+            },
+            audition: AuditionState::Blocked {
+                reason: crate::outputs::AuditionBlock::NotChosen,
+                message: crate::outputs::AuditionBlock::NotChosen.message(),
+            },
+            audition_volume: 1.0,
+            devices: Vec::new(),
+            default_device: None,
+        }
+    }
+}
+
+/// Can an audition play, and where.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AuditionState {
+    Ready {
+        name: String,
+        /// "Same as show output" was chosen: the audience hears auditions.
+        through_show: bool,
+    },
+    /// The stream is being opened (off the engine thread).
+    Opening { name: String },
+    Blocked {
+        reason: crate::outputs::AuditionBlock,
+        message: String,
+    },
 }

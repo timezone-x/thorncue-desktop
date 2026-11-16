@@ -45,7 +45,7 @@ fn test_manager() -> Result<AudioManager<TestBackend>, String> {
 fn core_with(loader: Loader) -> (Core<TestBackend>, Receiver<Event>) {
     let (tx, rx) = unbounded();
     let core = Core::new(
-        Box::new(test_manager),
+        Box::new(|_| test_manager()),
         loader,
         Box::new(move |e| {
             let _ = tx.send(e);
@@ -460,7 +460,7 @@ fn restart_refuses_commands_until_rebuilt() {
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let g = gate.clone();
     let mut calls = 0;
-    let factory = move || {
+    let factory = move |_: Option<&engine::OutputDevice>| {
         calls += 1;
         if calls > 1 {
             let (lock, cv) = &*g;
@@ -471,7 +471,12 @@ fn restart_refuses_commands_until_rebuilt() {
         }
         test_manager()
     };
-    let engine = Engine::start::<TestBackend>(factory, kira_loader(), |_| {});
+    let engine = Engine::start::<TestBackend, TestBackend>(
+        factory,
+        engine::EngineOutputs::default(),
+        kira_loader(),
+        |_| {},
+    );
     engine
         .send(Command::LoadShow(plan(vec![PlanCue::audio("a", ladder())])))
         .unwrap();
@@ -531,7 +536,7 @@ fn closing_the_engine_does_not_wait_for_a_decode() {
 
 fn stall_watching_core() -> (Core<TestBackend>, Receiver<Event>) {
     let (tx, rx) = unbounded();
-    let factory = || {
+    let factory = |_: Option<&engine::OutputDevice>| {
         AudioManager::new(AudioManagerSettings {
             backend_settings: TestBackendSettings {
                 sample_rate: RATE,
@@ -1222,15 +1227,108 @@ fn q10() -> PlanCue {
     c
 }
 
+// ---------------------------------------------------------------------------
+// thorncue-spec#9: the audition output
+// ---------------------------------------------------------------------------
+
+fn device(id: &str, name: &str) -> engine::OutputDevice {
+    engine::OutputDevice {
+        id: id.into(),
+        name: name.into(),
+    }
+}
+
+fn speakers() -> engine::OutputDevice {
+    device("test:speakers", "Booth speakers")
+}
+
+fn phones() -> engine::OutputDevice {
+    device("test:phones", "Headphones")
+}
+
+fn booth_devices() -> engine::DeviceList {
+    engine::DeviceList {
+        devices: vec![speakers(), phones()],
+        default: Some(speakers().id),
+    }
+}
+
+/// Opens a test manager for any device, as the real opener would (answer on a channel).
+fn test_opener() -> engine::AuditionOpener<TestBackend> {
+    Box::new(|_| {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        tx.send(test_manager()).unwrap();
+        rx
+    })
+}
+
+/// A core whose show is on the system default (the booth speakers) and whose audition
+/// output is `audition`.
+fn booth_core(
+    audition: engine::AuditionOutput,
+    cues: Vec<PlanCue>,
+) -> (Core<TestBackend>, Receiver<Event>) {
+    let (tx, rx) = unbounded();
+    let mut core = Core::with_outputs(
+        Box::new(|_| test_manager()),
+        Some(test_opener()),
+        engine::OutputSetup {
+            show: engine::ShowOutput::SystemDefault,
+            audition,
+            devices: booth_devices(),
+            audition_volume: 1.0,
+        },
+        kira_loader(),
+        Box::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    );
+    core.handle(Command::LoadShow(plan(cues)));
+    wait_ready(&mut core);
+    core.tick();
+    (core, rx)
+}
+
+fn phones_core(cues: Vec<PlanCue>) -> (Core<TestBackend>, Receiver<Event>) {
+    booth_core(engine::AuditionOutput::Device(phones()), cues)
+}
+
+/// Render both outputs for `seconds`, as their two devices would: (show, audition) left
+/// channels. The audition is empty while its output isn't open.
+fn render_both(core: &mut Core<TestBackend>, seconds: f64) -> (Vec<f32>, Vec<f32>) {
+    let frames = (seconds * RATE as f64).round() as usize;
+    let (mut show, mut aud) = (Vec::new(), Vec::new());
+    let mut done = 0;
+    while done < frames {
+        let n = BLOCK.min(frames - done);
+        let out = core.backend_mut().unwrap().render(n);
+        show.extend(out.chunks(2).map(|f| f[0]));
+        if let Some(b) = core.audition_backend_mut() {
+            aud.extend(b.render(n).chunks(2).map(|f| f[0]));
+        }
+        done += n;
+        core.tick();
+    }
+    (show, aud)
+}
+
+fn audition_ready(core: &Core<TestBackend>) -> bool {
+    matches!(
+        core.snapshot().outputs.audition,
+        engine::AuditionState::Ready { .. }
+    )
+}
+
 fn audition_first_value(core: &mut Core<TestBackend>, from: f64) -> f32 {
     core.handle(Command::Audition { index: 0, from });
-    let out = render(core, 0.2);
-    out[BLOCK + 10]
+    let (_, aud) = render_both(core, 0.2);
+    aud[BLOCK + 10]
 }
 
 #[test]
 fn audition_starts_where_the_marker_is() {
-    let (mut core, _rx) = ready_core(vec![q10()]);
+    let (mut core, _rx) = phones_core(vec![q10()]);
+    assert!(audition_ready(&core));
     // Inside the edit: the cue as edited, from that point.
     assert!((audition_first_value(&mut core, 6.5) - rung(6)).abs() < 1e-5);
     let p = core.positions().into_iter().find(|p| p.audition).unwrap();
@@ -1248,53 +1346,391 @@ fn audition_starts_where_the_marker_is() {
 }
 
 #[test]
-fn audition_is_refused_while_cues_run_and_go_and_stop_all_end_it() {
-    let (mut core, rx) = ready_core(vec![q10(), dc("b")]);
-    core.handle(Command::JumpAndPlay(1));
-    render(&mut core, 0.1);
+fn an_audition_never_reaches_the_show_output() {
+    let (mut core, _rx) = phones_core(vec![q10()]);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    let (show, aud) = render_both(&mut core, 0.5);
+    assert!(silent(&show), "nothing on the show output");
+    assert!(!silent(&aud), "the audition is on the headphones");
+}
+
+#[test]
+fn rule_1_audition_is_blocked_with_no_device_chosen() {
+    let (mut core, rx) = booth_core(engine::AuditionOutput::NotChosen, vec![q10()]);
+    assert!(core.audition_backend_mut().is_none(), "nothing opened");
     core.handle(Command::Audition {
         index: 0,
         from: 2.0,
     });
     assert_eq!(core.snapshot().audition, None);
+    let (show, _) = render_both(&mut core, 0.3);
+    assert!(silent(&show), "never rerouted to the show output");
     assert!(
         notices(&rx)
             .iter()
-            .any(|n| n.starts_with("Audition plays through the show output"))
+            .any(|n| n.starts_with("Choose an audition output")),
+        "the button still responds, with the reason"
     );
-    core.handle(Command::StopAll { panic: false });
-    render(&mut core, 0.05);
+    match core.snapshot().outputs.audition {
+        engine::AuditionState::Blocked { reason, .. } => {
+            assert_eq!(reason, engine::AuditionBlock::NotChosen)
+        }
+        other => panic!("{other:?}"),
+    }
+}
 
+#[test]
+fn rule_3_audition_is_blocked_on_the_show_device() {
+    // The show is on the system default, which is the booth speakers.
+    let (mut core, rx) = booth_core(engine::AuditionOutput::Device(speakers()), vec![q10()]);
     core.handle(Command::Audition {
         index: 0,
         from: 2.0,
     });
-    render(&mut core, 0.1);
+    let (show, _) = render_both(&mut core, 0.3);
+    assert!(silent(&show));
+    assert!(core.audition_backend_mut().is_none());
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n.contains("is, or may be, the show output, so the audience could hear"))
+    );
+    // Choosing the headphones unblocks it.
+    core.handle(Command::SetOutputs {
+        show: engine::ShowOutput::SystemDefault,
+        audition: engine::AuditionOutput::Device(phones()),
+    });
+    assert!(audition_ready(&core));
+}
+
+#[test]
+fn moving_the_show_onto_the_audition_device_stops_the_audition() {
+    let (mut core, rx) = phones_core(vec![q10()]);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    render_both(&mut core, 0.1);
     assert_eq!(core.snapshot().audition, Some(0));
-    core.handle(Command::SetStandby(0)); // the jump left standby at the end of the list
-    core.handle(Command::Go);
-    assert_eq!(core.snapshot().audition, None, "GO ends the audition");
-    core.handle(Command::StopAll { panic: false });
-    render(&mut core, 0.05);
+    core.handle(Command::SetOutputs {
+        show: engine::ShowOutput::Device(phones()),
+        audition: engine::AuditionOutput::Device(phones()),
+    });
+    assert_eq!(core.snapshot().audition, None);
+    assert!(core.audition_backend_mut().is_none());
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n.starts_with("Audition stopped."))
+    );
+}
 
+#[test]
+fn rule_2_a_running_audition_stops_when_its_device_goes() {
+    // Reported by the stream (unplugged mid-audition).
+    let (mut core, rx) = phones_core(vec![q10()]);
     core.handle(Command::Audition {
         index: 0,
         from: 2.0,
     });
-    core.handle(Command::StopAll { panic: false });
-    render(&mut core, 0.05);
-    assert_eq!(core.snapshot().audition, None, "Stop all ends it");
-    assert!(silent(&render(&mut core, 0.5)));
+    render_both(&mut core, 0.1);
+    core.audition_backend_mut()
+        .unwrap()
+        .inject_device_error("gone");
+    core.tick();
+    assert_eq!(core.snapshot().audition, None, "stopped at once");
+    assert!(core.audition_backend_mut().is_none(), "and never rerouted");
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n.starts_with("Audition stopped.") && n.contains("isn't connected"))
+    );
+    let (show, _) = render_both(&mut core, 0.2);
+    assert!(silent(&show));
+
+    // Noticed by the device watcher instead.
+    let (mut core, _rx) = phones_core(vec![q10()]);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    render_both(&mut core, 0.1);
+    core.handle(Command::Devices(engine::DeviceList {
+        devices: vec![speakers()],
+        default: Some(speakers().id),
+    }));
+    assert_eq!(core.snapshot().audition, None);
+    assert!(matches!(
+        core.snapshot().outputs.audition,
+        engine::AuditionState::Blocked {
+            reason: engine::AuditionBlock::Missing(_),
+            ..
+        }
+    ));
+    // Plugged back in: auditions work again.
+    core.handle(Command::Devices(booth_devices()));
+    assert!(audition_ready(&core));
+}
+
+#[test]
+fn rule_4_an_output_that_wont_open_blocks_auditions() {
+    let (tx, rx) = unbounded();
+    let opener: engine::AuditionOpener<TestBackend> = Box::new(|_| {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        tx.send(Err("the device is busy.".to_string())).unwrap();
+        rx
+    });
+    let mut core = Core::with_outputs(
+        Box::new(|_| test_manager()),
+        Some(opener),
+        engine::OutputSetup {
+            audition: engine::AuditionOutput::Device(phones()),
+            devices: booth_devices(),
+            audition_volume: 1.0,
+            ..Default::default()
+        },
+        kira_loader(),
+        Box::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    );
+    core.tick();
+    match core.snapshot().outputs.audition {
+        engine::AuditionState::Blocked {
+            reason: engine::AuditionBlock::Failed(why),
+            ..
+        } => assert_eq!(why, "the device is busy."),
+        other => panic!("{other:?}"),
+    }
+    core.handle(Command::Audition {
+        index: 0,
+        from: 0.0,
+    });
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n.contains("couldn't be used: the device is busy."))
+    );
+}
+
+#[test]
+fn an_audition_output_that_is_still_opening_never_blocks_go() {
+    // The opener never answers: GO and the show carry on regardless (CLAUDE.md rule 2).
+    let (_keep, never) = crossbeam_channel::bounded::<Result<AudioManager<TestBackend>, String>>(1);
+    let opener: engine::AuditionOpener<TestBackend> = Box::new(move |_| never.clone());
+    let (tx, _rx) = unbounded();
+    let mut core = Core::with_outputs(
+        Box::new(|_| test_manager()),
+        Some(opener),
+        engine::OutputSetup {
+            audition: engine::AuditionOutput::Device(phones()),
+            devices: booth_devices(),
+            audition_volume: 1.0,
+            ..Default::default()
+        },
+        kira_loader(),
+        Box::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    );
+    core.handle(Command::LoadShow(plan(vec![dc("a")])));
+    wait_ready(&mut core);
+    assert!(matches!(
+        core.snapshot().outputs.audition,
+        engine::AuditionState::Opening { .. }
+    ));
+    core.handle(Command::Go);
+    let out = render(&mut core, 1.5);
+    assert!((out[(1.2 * RATE as f64) as usize] - rung(1)).abs() < 1e-5);
+}
+
+#[test]
+fn stop_all_panic_go_and_restart_leave_the_audition_alone() {
+    let (mut core, _rx) = phones_core(vec![q10(), dc("b")]);
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    core.handle(Command::JumpAndPlay(1));
+    render_both(&mut core, 0.2);
+    for cmd in [
+        Command::StopAll { panic: false },
+        Command::StopAll { panic: true },
+        Command::SetStandby(1),
+        Command::Go,
+        Command::RestartAudio,
+        Command::StopAll { panic: true },
+    ] {
+        core.handle(cmd.clone());
+        let (_, aud) = render_both(&mut core, 0.1);
+        assert_eq!(core.snapshot().audition, Some(0), "after {cmd:?}");
+        assert!(!silent(&aud), "still audible after {cmd:?}");
+    }
+    assert!(core.running_indexes().is_empty(), "the show did stop");
+    // Its own Stop does stop it.
+    core.handle(Command::StopAudition);
+    render_both(&mut core, 0.05);
+    let (_, aud) = render_both(&mut core, 0.2);
+    assert!(silent(&aud));
+    assert_eq!(core.snapshot().audition, None);
+}
+
+#[test]
+fn an_audition_with_fades_matches_playback_gain() {
+    // Fade in 2 s, fade out 2 s over the edited 10 s, volume 0.5.
+    let mut c = dc("a");
+    c.fade_in = 2.0;
+    c.fade_out = 2.0;
+    c.volume = 0.5;
+    let (mut core, _rx) = phones_core(vec![c]);
+    core.handle(Command::Go);
+    let played = render(&mut core, 10.0);
+    core.handle(Command::StopAll { panic: true });
+    render_both(&mut core, 0.1);
+
+    // Audition from 1.0 s (inside the fade-in) and from 8.5 s (inside the fade-out): every
+    // sample matches what GO played at the same point of the cue.
+    for from in [1.0, 8.5] {
+        core.handle(Command::Audition { index: 0, from });
+        let (_, aud) = render_both(&mut core, 1.0);
+        let start = (from * RATE as f64) as usize;
+        for k in [1usize, 100, 1000, 4000, 7000] {
+            let want = played[start + k];
+            let got = aud[k];
+            assert!(
+                (want - got).abs() < 1e-4,
+                "from {from} s, sample {k}: playback {want}, audition {got}"
+            );
+        }
+        core.handle(Command::StopAudition);
+        render_both(&mut core, 0.05);
+    }
+}
+
+#[test]
+fn audition_volume_is_separate_from_the_master() {
+    let (mut core, _rx) = phones_core(vec![dc("a")]);
+    core.handle(Command::SetMaster(0.1));
+    core.handle(Command::SetAuditionVolume(0.5));
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    let (_, aud) = render_both(&mut core, 0.2);
+    let want = rung(2) * 10f32.powf(engine_db(0.5) / 20.0);
+    assert!(
+        (aud[BLOCK * 2] - want).abs() < 1e-4,
+        "{} vs {want}",
+        aud[BLOCK * 2]
+    );
+}
+
+/// The engine's amplitude-to-decibels mapping, as kira applies it.
+fn engine_db(a: f64) -> f32 {
+    (20.0 * a.log10()) as f32
+}
+
+#[test]
+fn same_as_show_plays_on_the_show_device_but_still_ignores_stop_all() {
+    let (mut core, _rx) = booth_core(engine::AuditionOutput::SameAsShow, vec![q10()]);
+    match core.snapshot().outputs.audition {
+        engine::AuditionState::Ready { through_show, .. } => assert!(through_show),
+        other => panic!("{other:?}"),
+    }
+    core.handle(Command::Audition {
+        index: 0,
+        from: 2.0,
+    });
+    core.handle(Command::StopAll { panic: true });
+    let (_, aud) = render_both(&mut core, 0.2);
+    assert!(!silent(&aud));
+}
+
+#[test]
+fn changing_the_show_output_moves_running_cues() {
+    let (mut core, rx) = phones_core(vec![dc("a"), dc("b")]);
+    let mut waiting = dc("b");
+    waiting.pre_wait = 2.0;
+    update(&mut core, vec![dc("a"), waiting]);
+    core.handle(Command::Go); // a: plays
+    render(&mut core, 3.0);
+    core.handle(Command::Go); // b: in its 2 s pre-wait
+    render(&mut core, 0.5);
+    let before = core.position_of(0).unwrap();
+    let headphones_free = engine::DeviceList {
+        devices: vec![speakers(), phones(), device("test:desk", "Desk")],
+        default: Some(speakers().id),
+    };
+    core.handle(Command::Devices(headphones_free));
+    core.handle(Command::SetOutputs {
+        show: engine::ShowOutput::Device(device("test:desk", "Desk")),
+        audition: engine::AuditionOutput::Device(phones()),
+    });
+    assert_eq!(core.running_indexes(), vec![0, 1], "both still there");
+    let after = core.position_of(0).unwrap();
+    assert!((after - before).abs() < 0.05, "{before} -> {after}");
+    // a carries on from 3.5 s on the new device; b still starts 1.5 s later.
+    let out = render(&mut core, 1.0);
+    assert!((out[(0.6 * RATE as f64) as usize] - rung(4)).abs() < 1e-5);
+    assert!(
+        core.snapshot()
+            .running
+            .iter()
+            .any(|r| r.index == 1 && r.phase == RunPhase::Waiting)
+    );
+    render(&mut core, 0.7);
+    assert!(
+        core.snapshot()
+            .running
+            .iter()
+            .any(|r| r.index == 1 && r.phase == RunPhase::Running)
+    );
+    assert!(
+        notices(&rx)
+            .iter()
+            .any(|n| n == "The show now plays on Desk.")
+    );
+}
+
+#[test]
+fn a_missing_show_device_falls_back_and_says_so() {
+    let (tx, _rx) = unbounded();
+    let opened: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let seen = opened.clone();
+    let core: Core<TestBackend> = Core::with_outputs(
+        Box::new(move |d| {
+            seen.lock().unwrap().push(d.map(|d| d.id.clone()));
+            test_manager()
+        }),
+        None,
+        engine::OutputSetup {
+            show: engine::ShowOutput::Device(device("test:gone", "Desk")),
+            devices: booth_devices(),
+            audition_volume: 1.0,
+            ..Default::default()
+        },
+        kira_loader(),
+        Box::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    );
+    assert_eq!(*opened.lock().unwrap(), vec![None], "opened on the default");
+    let s = core.snapshot().outputs.show;
+    assert!(s.fallback);
+    assert_eq!(s.name, "System default (Booth speakers)");
 }
 
 #[test]
 fn an_audition_ends_by_itself_and_survives_edits_to_its_cue() {
-    let (mut core, _rx) = ready_core(vec![q10()]);
+    let (mut core, _rx) = phones_core(vec![q10()]);
     core.handle(Command::Audition {
         index: 0,
         from: 8.5,
     });
-    render(&mut core, 0.2);
+    render_both(&mut core, 0.2);
     let mut edited = q10();
     edited.cuts = vec![];
     let other = dc("new");
@@ -1304,7 +1740,7 @@ fn an_audition_ends_by_itself_and_survives_edits_to_its_cue() {
         Some(1),
         "follows its cue to its new index"
     );
-    render(&mut core, 0.6);
+    render_both(&mut core, 0.6);
     assert_eq!(
         core.snapshot().audition,
         None,

@@ -19,14 +19,39 @@ use kira::{AudioManager, Decibels, StartTime, Tween};
 use crate::backend::EngineBackend;
 use crate::edit::EditKey;
 use crate::gain::{CueGainBuilder, CueGainHandle, GainPhase};
+use crate::outputs::{
+    AuditionBlock, AuditionOutput, AuditionRoute, DeviceList, OutputDevice, ShowOutput, ShowRoute,
+    audition_route, show_route,
+};
 use crate::plan::{CueKind, ShowPlan};
 use crate::prep::{Job, Loader, MISSING, PrepMsg, PrepPool};
 use crate::state::{
-    CuePrep, EngineStatus, Event, Notice, Position, PrepState, RunPhase, RunningCue, Snapshot,
+    AuditionState, CuePrep, EngineStatus, Event, Notice, OutputsState, Position, PrepState,
+    RunPhase, RunningCue, Snapshot,
 };
 
-/// Builds the audio manager. Called on the engine thread at start and on Restart audio engine.
-pub type ManagerFactory<B> = Box<dyn FnMut() -> Result<AudioManager<B>, String> + Send>;
+/// Builds the show's audio manager on a device (`None` = the system default). Called on the
+/// engine thread at start, on Restart audio engine and when the show output is changed.
+pub type ManagerFactory<B> =
+    Box<dyn FnMut(Option<&OutputDevice>) -> Result<AudioManager<B>, String> + Send>;
+
+/// Opens the audition output on a device (`None` = the system default, only for "Same as show
+/// output"). Answers on the returned channel: the real one opens on its own thread, so the
+/// engine thread never waits for a device.
+pub type AuditionOpener<A> = Box<
+    dyn FnMut(Option<OutputDevice>) -> crossbeam_channel::Receiver<Result<AudioManager<A>, String>>
+        + Send,
+>;
+
+/// The outputs the engine starts with (from the app's settings and a first device listing).
+#[derive(Debug, Clone, Default)]
+pub struct OutputSetup {
+    pub show: ShowOutput,
+    pub audition: AuditionOutput,
+    pub devices: DeviceList,
+    /// Linear amplitude 0..=1.
+    pub audition_volume: f64,
+}
 
 /// Everything the UI can ask for. Commands are intents; the engine decides what they mean.
 #[derive(Debug, Clone)]
@@ -61,14 +86,23 @@ pub enum Command {
         path: PathBuf,
         reply: crate::peaks::PeaksReply,
     },
-    /// Trim editor: play cue `index` from `from` seconds into its file, at its volume, without
-    /// fades or pre-wait. Refused while cues are running: until a headphone output exists
-    /// (M8), audition goes to the show output (W5).
+    /// Play cue `index` from `from` seconds into its file on the audition output, with its
+    /// volume and fades as they would be heard at that point (no pre-wait). Only on the
+    /// audition output; refused with the reason when auditions are blocked (thorncue-spec#9).
     Audition {
         index: usize,
         from: f64,
     },
     StopAudition,
+    /// The operator's output choices (saved per machine by the app).
+    SetOutputs {
+        show: ShowOutput,
+        audition: AuditionOutput,
+    },
+    /// The devices present now (from the device watcher).
+    Devices(DeviceList),
+    /// Audition volume, linear amplitude 0..=1, separate from the master.
+    SetAuditionVolume(f64),
 }
 
 /// Operator settings that change how the transport behaves.
@@ -126,6 +160,11 @@ enum Running {
         looping: bool,
         /// Stopped by Stop all, a silence or fade-out cue, or a re-GO: never continues.
         stopped: bool,
+        /// Show-clock tick the sound starts at (after its pre-wait).
+        start: u64,
+        /// Seconds into the edited audio it started from (0, unless it was moved to another
+        /// show output mid-cue).
+        offset: f64,
     },
     /// Silence and fade-out cues, and audio cues of length 0 (after their pre-wait).
     Timer { index: usize, start: u64, end: u64 },
@@ -185,9 +224,31 @@ struct PendingStart {
     index: usize,
 }
 
-pub struct Core<B: EngineBackend> {
+/// The audition output: its own manager on its own device (thorncue-spec#9), so nothing the
+/// show does (Stop all, panic, Restart) touches it.
+struct AuditionOut<A: EngineBackend> {
+    opener: Option<AuditionOpener<A>>,
+    manager: Option<AudioManager<A>>,
+    /// Audition volume lives on this track.
+    track: Option<TrackHandle>,
+    /// The route the manager is open (or opening) for.
+    open_for: Option<AuditionRoute>,
+    opening: Option<crossbeam_channel::Receiver<Result<AudioManager<A>, String>>>,
+    /// The route failed to open or lost its device: not retried until the devices or the
+    /// choice change.
+    failed: Option<(AuditionRoute, AuditionBlock)>,
+}
+
+pub struct Core<B: EngineBackend, A: EngineBackend = B> {
     factory: ManagerFactory<B>,
     manager: Option<AudioManager<B>>,
+    /// What the show manager was opened on (`None` = the system default).
+    show_device: Option<OutputDevice>,
+    show_choice: ShowOutput,
+    audition_choice: AuditionOutput,
+    devices: DeviceList,
+    audition_volume: f64,
+    aud: AuditionOut<A>,
     show_track: Option<TrackHandle>,
     show_clock: Option<ClockHandle>,
     /// Ticks only while the device is pulling audio: if it stops, the output is dead.
@@ -229,13 +290,25 @@ pub struct Core<B: EngineBackend> {
     last_positions: Instant,
 }
 
-impl<B: EngineBackend> Core<B> {
+impl<B: EngineBackend, A: EngineBackend> Core<B, A> {
+    /// A core with no audition output (auditions are blocked until one is chosen and opens).
     pub fn new(
-        mut factory: ManagerFactory<B>,
+        factory: ManagerFactory<B>,
         loader: Loader,
         out: Box<dyn FnMut(Event) + Send>,
     ) -> Self {
-        let (manager, status, status_message) = match factory() {
+        Self::with_outputs(factory, None, OutputSetup::default(), loader, out)
+    }
+
+    pub fn with_outputs(
+        mut factory: ManagerFactory<B>,
+        audition_opener: Option<AuditionOpener<A>>,
+        setup: OutputSetup,
+        loader: Loader,
+        out: Box<dyn FnMut(Event) + Send>,
+    ) -> Self {
+        let show_device = show_route(&setup.show, &setup.devices).device;
+        let (manager, status, status_message) = match factory(show_device.as_ref()) {
             Ok(m) => (Some(m), EngineStatus::Ok, None),
             Err(e) => {
                 tracing::error!("couldn't open audio output: {e}");
@@ -245,6 +318,19 @@ impl<B: EngineBackend> Core<B> {
         let mut core = Self {
             factory,
             manager,
+            show_device,
+            show_choice: setup.show,
+            audition_choice: setup.audition,
+            devices: setup.devices,
+            audition_volume: setup.audition_volume.clamp(0.0, 1.0),
+            aud: AuditionOut {
+                opener: audition_opener,
+                manager: None,
+                track: None,
+                open_for: None,
+                opening: None,
+                failed: None,
+            },
             show_track: None,
             show_clock: None,
             heartbeat: None,
@@ -275,6 +361,7 @@ impl<B: EngineBackend> Core<B> {
             last_positions: Instant::now(),
         };
         core.build_mix();
+        core.reconcile_audition();
         core
     }
 
@@ -319,6 +406,11 @@ impl<B: EngineBackend> Core<B> {
 
     pub fn backend_mut(&mut self) -> Option<&mut B> {
         self.manager.as_mut().map(|m| m.backend_mut())
+    }
+
+    /// The audition output's backend, while it is open.
+    pub fn audition_backend_mut(&mut self) -> Option<&mut A> {
+        self.aud.manager.as_mut().map(|m| m.backend_mut())
     }
 
     pub(crate) fn prep_results(&self) -> crossbeam_channel::Receiver<PrepMsg> {
@@ -421,6 +513,15 @@ impl<B: EngineBackend> Core<B> {
             Command::Peaks { path, reply } => self.peaks(path, reply),
             Command::Audition { index, from } => self.start_audition(index, from),
             Command::StopAudition => self.stop_audition(),
+            Command::SetOutputs { show, audition } => self.set_outputs(show, audition),
+            Command::Devices(list) => self.set_devices(list),
+            Command::SetAuditionVolume(v) => {
+                self.audition_volume = v.clamp(0.0, 1.0);
+                if let Some(t) = &mut self.aud.track {
+                    t.set_volume(amplitude_to_db(self.audition_volume), INSTANT);
+                }
+                self.dirty = true;
+            }
         }
         self.dirty = true;
     }
@@ -636,8 +737,7 @@ impl<B: EngineBackend> Core<B> {
             return;
         }
         self.last_go = Some(Instant::now());
-        // The show starts: an audition on the same output would be heard by the audience.
-        self.stop_audition();
+        // An audition is on its own output and keeps playing (thorncue-spec#9).
         self.fire(self.standby);
     }
 
@@ -723,6 +823,13 @@ impl<B: EngineBackend> Core<B> {
     }
 
     fn play_now(&mut self, i: usize) {
+        let pre_wait = self.plan.cues[i].pre_wait;
+        self.play_from(i, 0.0, pre_wait);
+    }
+
+    /// Start cue `i` `offset` seconds into its edited audio, after `pre_wait` seconds. GO uses
+    /// 0 and the cue's pre-wait; moving to another show output uses where the cue was.
+    fn play_from(&mut self, i: usize, offset: f64, pre_wait: f64) {
         let Some(a) = self.cue_asset[i] else { return };
         let key = self.edit_key(i);
         let Some(edited) = self.assets[a].edits.get(&key).cloned() else {
@@ -733,7 +840,7 @@ impl<B: EngineBackend> Core<B> {
         let Some(mut data) = edited else {
             // Cuts remove everything: length 0. It ends at once (after its pre-wait) and
             // continues (FORMAT.md 2.5 "Edited audio").
-            self.start_timer(i, cue.pre_wait);
+            self.start_timer(i, pre_wait);
             return;
         };
         let (Some(show), Some(now)) = (
@@ -751,12 +858,20 @@ impl<B: EngineBackend> Core<B> {
         // Sound and gain start at the same show-clock time, so the envelope lines up with the
         // first sample; the clock pauses with the show track, so Pause freezes pre-waits.
         let start = ClockTime {
-            ticks: now.ticks + (cue.pre_wait * CLOCK_RATE).round() as u64,
+            ticks: now.ticks + (pre_wait * CLOCK_RATE).round() as u64,
             ..now
         };
         data.settings.start_time = StartTime::ClockTime(start);
         if cue.looping {
             data = data.loop_region(..);
+        }
+        let offset = if cue.looping && length > 0.0 {
+            offset % length
+        } else {
+            offset.min(length)
+        };
+        if offset > 0.0 {
+            data.settings.start_position = kira::sound::PlaybackPosition::Seconds(offset);
         }
         let mut builder = TrackBuilder::new().sound_capacity(2);
         let gain = builder.add_effect(CueGainBuilder {
@@ -766,6 +881,7 @@ impl<B: EngineBackend> Core<B> {
             length,
             looping: cue.looping,
             start: Some(start),
+            offset,
         });
         let mut track = match show.add_sub_track(builder) {
             Ok(t) => t,
@@ -799,6 +915,8 @@ impl<B: EngineBackend> Core<B> {
             length,
             looping: cue.looping,
             stopped: false,
+            start: start.ticks,
+            offset,
         });
     }
 
@@ -828,9 +946,11 @@ impl<B: EngineBackend> Core<B> {
 
     /// Stop all always wins (CLAUDE.md rule 3): every running cue, every pending start, every
     /// silence/fade-out timer. With a stop fade set (and not a panic), audio fades out.
+    ///
+    /// It deliberately leaves a running audition alone: that is on a different output, and
+    /// the operator may be previewing the next cue while stopping the show. The audition has
+    /// its own Stop (thorncue-spec#9, ARCHITECTURE.md "Stop all and the audition").
     fn stop_all(&mut self, panic: bool) {
-        // Stop all always wins: the audition too (ARCHITECTURE.md transport table).
-        self.stop_audition();
         let fade = if panic { 0.0 } else { self.options.stop_fade };
         if fade > 0.0 {
             self.pending.clear();
@@ -843,6 +963,8 @@ impl<B: EngineBackend> Core<B> {
                         gain,
                         length,
                         looping,
+                        start,
+                        offset,
                         ..
                     } => {
                         // A cue already fading (fade-out cue) keeps its own fade.
@@ -855,6 +977,8 @@ impl<B: EngineBackend> Core<B> {
                             length,
                             looping,
                             stopped: true,
+                            start,
+                            offset,
                         });
                     }
                     timer @ Running::Timer { .. } => self.retire(timer),
@@ -918,16 +1042,21 @@ impl<B: EngineBackend> Core<B> {
 
     fn start_audition(&mut self, i: usize, from: f64) {
         self.stop_audition();
+        // Only ever on the audition output. Blocked: say why and do nothing else.
+        let blocked = match self.audition_state() {
+            AuditionState::Ready { .. } => None,
+            AuditionState::Opening { name } => Some(format!(
+                "The audition output \"{name}\" is still opening. Try again in a moment."
+            )),
+            AuditionState::Blocked { message, .. } => Some(message),
+        };
+        if let Some(message) = blocked {
+            self.notice(message, true);
+            return;
+        }
         let Some(cue) = self.plan.cues.get(i).cloned() else {
             return;
         };
-        if !self.running.is_empty() || !self.pending.is_empty() {
-            self.notice(
-                "Audition plays through the show output, so it's off while cues are running. Stop all first.",
-                true,
-            );
-            return;
-        }
         let ready = self.cue_asset[i].and_then(|a| {
             let asset = &self.assets[a];
             let raw = asset.raw.clone()?;
@@ -946,33 +1075,47 @@ impl<B: EngineBackend> Core<B> {
         let from = from.clamp(0.0, duration);
         let out = cue.trim_end.map_or(duration, |e| e.min(duration));
         let segs = crate::edit::kept_segments(cue.trim_start, cue.trim_end, &cue.cuts, duration);
-        // From inside the edit: hear the cue as edited. Before the in point or after the out
-        // point: hear the file itself from there (so you can find a new in or out point).
-        let (data, segments, offset) = match edited {
+        // From inside the edit: hear the cue as it plays from that point, fades included (the
+        // web's auditions ignored fades). Before the in point or after the out point: hear the
+        // file itself from there, at the cue's volume (so you can find a new in or out point).
+        let (data, segments, offset, envelope) = match edited {
             Some(d) if from >= cue.trim_start && from < out && !segs.is_empty() => {
                 let offset = edited_time(&segs, from);
-                (d, segs, offset)
+                let length = d.duration().as_secs_f64();
+                (d, segs, offset, Some(length))
             }
             _ if from < duration - 0.001 => {
-                (raw.slice(from..duration), vec![(from, duration)], 0.0)
+                (raw.slice(from..duration), vec![(from, duration)], 0.0, None)
             }
             _ => return,
         };
-        let Some(show) = self.show_track.as_mut() else {
+        let Some(out_track) = self.aud.track.as_mut() else {
             return;
         };
         let mut data = data;
         data.settings.start_position = kira::sound::PlaybackPosition::Seconds(offset);
         let mut builder = TrackBuilder::new().sound_capacity(1);
-        let gain = builder.add_effect(CueGainBuilder {
-            volume: cue.volume,
-            fade_in: 0.0,
-            fade_out: 0.0,
-            length: f64::MAX,
-            looping: false,
-            start: None,
+        let gain = builder.add_effect(match envelope {
+            Some(length) => CueGainBuilder {
+                volume: cue.volume,
+                fade_in: cue.fade_in,
+                fade_out: cue.fade_out,
+                length,
+                looping: cue.looping,
+                start: None,
+                offset,
+            },
+            None => CueGainBuilder {
+                volume: cue.volume,
+                fade_in: 0.0,
+                fade_out: 0.0,
+                length: f64::MAX,
+                looping: false,
+                start: None,
+                offset: 0.0,
+            },
         });
-        let Ok(mut track) = show.add_sub_track(builder) else {
+        let Ok(mut track) = out_track.add_sub_track(builder) else {
             return;
         };
         match track.play(data) {
@@ -999,14 +1142,255 @@ impl<B: EngineBackend> Core<B> {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Outputs (thorncue-spec#9)
+    // -----------------------------------------------------------------------
+
+    fn show_route(&self) -> ShowRoute {
+        show_route(&self.show_choice, &self.devices)
+    }
+
+    fn wanted_audition(&self) -> Result<AuditionRoute, AuditionBlock> {
+        audition_route(&self.audition_choice, &self.show_route(), &self.devices)
+    }
+
+    pub fn audition_state(&self) -> AuditionState {
+        match self.wanted_audition() {
+            Err(reason) => AuditionState::Blocked {
+                message: reason.message(),
+                reason,
+            },
+            Ok(route) => {
+                if let Some((r, reason)) = &self.aud.failed
+                    && *r == route
+                {
+                    AuditionState::Blocked {
+                        message: reason.message(),
+                        reason: reason.clone(),
+                    }
+                } else if self.aud.manager.is_some() && self.aud.open_for.as_ref() == Some(&route) {
+                    AuditionState::Ready {
+                        name: route.name,
+                        through_show: route.through_show,
+                    }
+                } else {
+                    AuditionState::Opening { name: route.name }
+                }
+            }
+        }
+    }
+
+    fn set_outputs(&mut self, show: ShowOutput, audition: AuditionOutput) {
+        let choice_changed = audition != self.audition_choice || show != self.show_choice;
+        self.show_choice = show;
+        self.audition_choice = audition;
+        if choice_changed {
+            // A new choice deserves a fresh try.
+            self.aud.failed = None;
+        }
+        let device = self.show_route().device;
+        if device != self.show_device {
+            self.move_show(device);
+        }
+        self.reconcile_audition();
+        self.dirty = true;
+    }
+
+    fn set_devices(&mut self, list: DeviceList) {
+        if list == self.devices {
+            return;
+        }
+        self.devices = list;
+        // The devices changed: a failed audition route may work now (headphones back in).
+        self.aud.failed = None;
+        // The show output isn't reopened here: if its device went, kira already moved it to
+        // the system default and the bar warns; Restart audio engine (or choosing it again)
+        // goes back to it.
+        self.reconcile_audition();
+        self.dirty = true;
+    }
+
+    /// Open, keep or close the audition output so it matches the choice and the devices.
+    fn reconcile_audition(&mut self) {
+        let wanted = self.wanted_audition();
+        let keep = matches!(&wanted, Ok(r) if self.aud.open_for.as_ref() == Some(r));
+        if keep {
+            return;
+        }
+        // Whatever is open is wrong now (blocked, or another device): stop it at once.
+        if self.audition.is_some() {
+            if let Err(reason) = &wanted {
+                self.notice(format!("Audition stopped. {}", reason.message()), true);
+            }
+            self.stop_audition();
+        }
+        self.close_audition_output();
+        let Ok(route) = wanted else { return };
+        if self.aud.failed.as_ref().is_some_and(|(r, _)| *r == route) {
+            return;
+        }
+        let Some(opener) = self.aud.opener.as_mut() else {
+            self.aud.failed = Some((
+                route,
+                AuditionBlock::Failed("there is no audition output in this build.".into()),
+            ));
+            return;
+        };
+        self.aud.opening = Some(opener(route.device.clone()));
+        self.aud.open_for = Some(route);
+        self.poll_audition_open();
+    }
+
+    fn close_audition_output(&mut self) {
+        self.audition = None;
+        self.aud.track = None;
+        self.aud.manager = None;
+        self.aud.opening = None;
+        self.aud.open_for = None;
+    }
+
+    /// The opener's answer, when it has come.
+    fn poll_audition_open(&mut self) {
+        let Some(rx) = &self.aud.opening else { return };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                Err("it didn't open.".to_string())
+            }
+        };
+        self.aud.opening = None;
+        let route = self.aud.open_for.clone().expect("opening has a route");
+        let volume = amplitude_to_db(self.audition_volume);
+        let built = result.and_then(|mut m| {
+            m.add_sub_track(TrackBuilder::new().sub_track_capacity(4).volume(volume))
+                .map(|t| (m, t))
+                .map_err(|e| e.to_string())
+        });
+        match built {
+            Ok((m, t)) => {
+                tracing::info!("audition output open on {}", route.name);
+                self.aud.manager = Some(m);
+                self.aud.track = Some(t);
+            }
+            Err(e) => {
+                tracing::warn!("audition output {}: {e}", route.name);
+                self.aud.open_for = None;
+                self.aud.failed = Some((route, AuditionBlock::Failed(e)));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The audition device reported it's gone: stop at once, never reroute (rule 2).
+    fn check_audition_device(&mut self) {
+        let lost = self
+            .aud
+            .manager
+            .as_mut()
+            .and_then(|m| m.backend_mut().take_device_error());
+        let Some(err) = lost else { return };
+        let route = self.aud.open_for.clone();
+        tracing::warn!("audition output lost: {err}");
+        let playing = self.audition.is_some();
+        self.close_audition_output();
+        if let Some(route) = route {
+            let reason = AuditionBlock::Missing(route.name.clone());
+            if playing {
+                self.notice(format!("Audition stopped. {}", reason.message()), true);
+            }
+            self.aud.failed = Some((route, reason));
+        }
+        self.dirty = true;
+    }
+
+    /// Changing the show output during a show moves running cues: each carries on from where
+    /// it was on the new device (after a short gap), with its fades where they were; pre-waits
+    /// keep their remaining time; Pause stays as it was. Cues already stopping with a fade are
+    /// let go. ARCHITECTURE.md "Output devices".
+    fn move_show(&mut self, device: Option<OutputDevice>) {
+        let now = self.clock_now().map(|t| t.ticks).unwrap_or(0);
+        struct Carry {
+            index: usize,
+            offset: f64,
+            pre_wait: f64,
+        }
+        let mut carry = Vec::new();
+        let mut timers = Vec::new();
+        for r in &self.running {
+            match r {
+                Running::Audio {
+                    index,
+                    gain,
+                    stopped: false,
+                    start,
+                    offset,
+                    ..
+                } => carry.push(Carry {
+                    index: *index,
+                    offset: offset + gain.elapsed(),
+                    pre_wait: start.saturating_sub(now) as f64 / CLOCK_RATE,
+                }),
+                Running::Audio { .. } => {}
+                Running::Timer { index, start, end } => {
+                    timers.push((*index, now.saturating_sub(*start), end.saturating_sub(now)))
+                }
+            }
+        }
+        let paused = self.paused;
+        let pending = std::mem::take(&mut self.pending);
+        self.running.clear();
+        self.stopping.clear();
+        self.show_track = None;
+        self.show_clock = None;
+        self.heartbeat = None;
+        self.paused = false;
+        self.manager = None;
+        self.show_device = device.clone();
+        match (self.factory)(device.as_ref()) {
+            Ok(m) => {
+                self.manager = Some(m);
+                self.status = EngineStatus::Ok;
+                self.status_message = None;
+                self.build_mix();
+            }
+            Err(e) => {
+                tracing::error!("opening the show output: {e}");
+                self.status = EngineStatus::NoOutput;
+                self.status_message = Some(no_output_message());
+                self.notice(no_output_message(), true);
+                return;
+            }
+        }
+        let now = self.clock_now().map(|t| t.ticks).unwrap_or(0);
+        for (index, done, left) in timers {
+            self.running.push(Running::Timer {
+                index,
+                start: now.saturating_sub(done),
+                end: now + left,
+            });
+        }
+        for c in carry {
+            self.play_from(c.index, c.offset, c.pre_wait);
+        }
+        self.pending = pending;
+        if paused {
+            self.set_paused(true);
+        }
+        let name = self.show_route().name;
+        self.notice(format!("The show now plays on {name}."), false);
+        self.dirty = true;
+    }
+
     fn toggle_pause(&mut self) {
         if self.show_track.is_some() {
             self.set_paused(!self.paused);
         }
     }
 
+    /// Restart audio engine: the show output only. A running audition is on its own output
+    /// and is left alone (thorncue-spec#9).
     fn restart(&mut self) {
-        self.audition = None;
         self.stop_everything_now();
         self.stopping.clear();
         self.show_track = None;
@@ -1015,7 +1399,8 @@ impl<B: EngineBackend> Core<B> {
         self.paused = false;
         self.manager = None;
         let t = Instant::now();
-        match (self.factory)() {
+        self.show_device = self.show_route().device;
+        match (self.factory)(self.show_device.as_ref()) {
             Ok(m) => {
                 self.manager = Some(m);
                 self.status = EngineStatus::Ok;
@@ -1146,6 +1531,8 @@ impl<B: EngineBackend> Core<B> {
             );
         }
         self.check_heartbeat();
+        self.poll_audition_open();
+        self.check_audition_device();
         self.retire_finished();
         if self
             .audition
@@ -1304,9 +1691,10 @@ impl<B: EngineBackend> Core<B> {
                     gain,
                     length,
                     looping,
+                    offset,
                     ..
                 } => {
-                    let elapsed = gain.elapsed();
+                    let elapsed = offset + gain.elapsed();
                     Position {
                         index: *index,
                         id: self.plan.cues[*index].id.clone(),
@@ -1428,6 +1816,15 @@ impl<B: EngineBackend> Core<B> {
             audition: self.audition.as_ref().map(|a| a.index),
             decoded_bytes: self.assets.iter().map(|a| a.bytes).sum(),
             master: self.master,
+            outputs: OutputsState {
+                show_choice: self.show_choice.clone(),
+                audition_choice: self.audition_choice.clone(),
+                show: self.show_route(),
+                audition: self.audition_state(),
+                audition_volume: self.audition_volume,
+                devices: self.devices.devices.clone(),
+                default_device: self.devices.default.clone(),
+            },
         }
     }
 

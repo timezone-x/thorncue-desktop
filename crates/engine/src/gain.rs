@@ -90,6 +90,10 @@ pub struct CueGainBuilder {
     pub looping: bool,
     /// When the sound starts; `None` = the first block processed.
     pub start: Option<ClockTime>,
+    /// Seconds into the edited audio the sound starts at (an audition from a marker, a cue
+    /// moved to another output): the envelope is taken from there, so fades sound exactly as
+    /// they do in playback. 0 for a cue fired by GO.
+    pub offset: f64,
 }
 
 impl EffectBuilder for CueGainBuilder {
@@ -120,6 +124,7 @@ impl EffectBuilder for CueGainBuilder {
             length: self.length,
             stop: None,
             last_gain: 0.0,
+            offset: self.offset.max(0.0),
         };
         (Box::new(effect), CueGainHandle { shared })
     }
@@ -142,6 +147,7 @@ struct CueGain {
     length: f64,
     stop: Option<StopFade>,
     last_gain: f32,
+    offset: f64,
 }
 
 impl CueGain {
@@ -212,7 +218,7 @@ impl Effect for CueGain {
                     }
                 }
                 None => {
-                    let t = self.frames_played as f64 * dt;
+                    let t = self.offset + self.frames_played as f64 * dt;
                     volume * self.envelope(t) as f32
                 }
             };
