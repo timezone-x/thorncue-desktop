@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """
-Reference reader and writer for ThornCue show packages (.tqs, format_version 1).
+Reference reader and writer for ThornCue packages, format_version 1:
+.tqs (a show), .tqc (cues) and .tqg (a group of cues).
 
 Standard library only, Python 3.10+. FORMAT.md is the spec; if this file and the
 spec disagree, the spec wins and this file has a bug.
 
-    python tqs_ref.py check  SHOW.tqs              validate and print a summary
+    python tqs_ref.py check  FILE.tqs|.tqc|.tqg   validate and print a summary
     python tqs_ref.py legacy OLD.zip OUT.tqs       convert an old web "Export ZIP"
 
 As a library:
 
-    manifest, warnings = read_package(path, extract_to=dir)   # raises TqsError
-    write_package(path, show, cues, asset_files)               # asset_files: {asset_id: Path}
+    manifest, warnings = read_package(path, extract_to=dir)    # raises TqsError
+    manifest, warnings = read_package(path, expect="cues")      # only accept a .tqc
+    write_package(path, show, cues, asset_files)                # a .tqs; asset_files: {asset_id: Path}
+    write_package(path, None, cues, asset_files, kind="group", groups=[{"id", "name", "color"}])
+
+Apps may use this file as their implementation (ThornCue Web does). Keep it standard
+library only, and keep app-specific code out of it: hooks like `audio_check` exist so
+an app can add its own checks without editing this file.
 
 The audio check here is a magic-byte sniff, because the standard library has no
 decoders. Real implementations MUST also confirm each file decodes (FORMAT.md 4.5).
@@ -32,8 +39,21 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-FORMAT = "thorncue.show"
+FORMAT = "thorncue.show"   # kept for code that imported it; see FORMATS
 FORMAT_VERSION = 1
+
+# format name -> kind. The kind decides which top-level sections a manifest has.
+FORMATS = {"thorncue.show": "show", "thorncue.cues": "cues", "thorncue.group": "group"}
+FORMAT_FOR_KIND = {v: k for k, v in FORMATS.items()}
+EXTENSIONS = {"show": ".tqs", "cues": ".tqc", "group": ".tqg"}
+MIME_TYPES = {"show": "application/vnd.thorncue.show+zip", "cues": "application/vnd.thorncue.cues+zip",
+              "group": "application/vnd.thorncue.group+zip"}
+KIND_NOUN = {"show": "a show (.tqs)", "cues": "a cue file (.tqc)", "group": "a group file (.tqg)"}
+
+MAX_GROUPS = 200
+MAX_GROUP_NAME = 60
+DEFAULT_GROUP_COLOR = "#3e7bd6"
+COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 MAX_ENTRIES = 2000
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
@@ -168,13 +188,92 @@ def normalise_cue(raw, assets: dict, seen_ids: set) -> dict:
     }
 
 
-def normalise_manifest(raw) -> tuple[dict, list[str]]:
-    """Validate and normalise a parsed manifest. Returns (manifest, warnings)."""
+def normalise_groups(raw, cues: list[dict], cue_groups: list, kind: str, warnings: list[str]) -> list[dict]:
+    """FORMAT.md section 2.7. Sets cue["group"] on `cues` in place (from `cue_groups`, the raw
+    group refs in cue order), may reorder nothing itself, and returns the normalised group list.
+    The caller pulls each group's cues together afterwards."""
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise TqsError("groups must be a list.")
+    if kind == "cues":
+        if raw or any(g is not None for g in cue_groups):
+            warnings.append("Ignoring groups in a cue file (.tqc files don't carry groups).")
+        return []
+    if len(raw) > MAX_GROUPS:
+        raise TqsError(f"This file has {len(raw)} groups; the limit is {MAX_GROUPS}.")
+    groups: list[dict] = []
+    seen: set = set()
+    for g in raw:
+        if not isinstance(g, dict):
+            raise TqsError("Every group must be an object.")
+        gid = g.get("id")
+        if not isinstance(gid, str) or not ID_RE.match(gid):
+            raise TqsError(f"Group id {gid!r} is not valid.")
+        if gid in seen:
+            raise TqsError(f"Two groups share the id {gid!r}.")
+        seen.add(gid)
+        name = _str(g.get("name"), "Group", MAX_GROUP_NAME, f"Group {gid}: name")
+        color = g.get("color")
+        if color is not None and not isinstance(color, str):
+            raise TqsError(f'Group "{name}": color must be text.')
+        if not (isinstance(color, str) and COLOR_RE.match(color)):
+            if color is not None:
+                warnings.append(f'Group "{name}" has an invalid colour {color!r}; using the default.')
+            color = DEFAULT_GROUP_COLOR
+        groups.append({"id": gid, "name": name, "color": color.lower()})
+    for c, gid in zip(cues, cue_groups):
+        if gid is None:
+            continue
+        if not isinstance(gid, str):
+            raise TqsError(f'Cue "{c["name"]}": group must be text or null.')
+        if gid not in seen:
+            raise TqsError(f'Cue "{c["name"]}" is in group "{gid}", which isn\'t in the file.')
+        c["group"] = gid
+    if kind == "group":
+        if len(groups) != 1:
+            raise TqsError(f"A group file (.tqg) must hold exactly one group; this one has {len(groups)}.")
+        if not cues:
+            raise TqsError("This group file (.tqg) has no cues.")
+        gid = groups[0]["id"]
+        if any(c.get("group") != gid for c in cues):
+            raise TqsError(f'Every cue in a group file must be in its group ("{groups[0]["name"]}").')
+    used = {c.get("group") for c in cues}
+    for g in list(groups):
+        if g["id"] not in used:
+            warnings.append(f'Group "{g["name"]}" has no cues; dropping it.')
+            groups.remove(g)
+    return groups
+
+
+def gather_groups(cues: list[dict], warnings: list[str] | None = None) -> list[dict]:
+    """Pull each group's cues together at the position of its first cue, keeping their order
+    (FORMAT.md 2.7). Ungrouped cues keep their positions relative to everything else."""
+    out: list[dict] = []
+    placed: set = set()
+    for c in cues:
+        gid = c.get("group")
+        if gid is None:
+            out.append(c)
+        elif gid not in placed:
+            placed.add(gid)
+            out.extend(x for x in cues if x.get("group") == gid)
+    if warnings is not None and [c["id"] for c in out] != [c["id"] for c in cues]:
+        warnings.append("Some groups' cues weren't next to each other; they've been moved together.")
+    return out
+
+
+def normalise_manifest(raw, expect: str | None = None) -> tuple[dict, list[str]]:
+    """Validate and normalise a parsed manifest. Returns (manifest, warnings).
+    `expect` ("show", "cues" or "group") rejects any other kind with a clear message."""
     warnings: list[str] = []
     if not isinstance(raw, dict):
         raise TqsError("manifest.json must be a JSON object.")
-    if raw.get("format") != FORMAT:
-        raise TqsError("This isn't a ThornCue show (manifest.json has the wrong format name).")
+    kind = FORMATS.get(raw.get("format"))
+    if kind is None:
+        raise TqsError("This isn't a ThornCue file (manifest.json has an unknown format name).")
+    if expect is not None and kind != expect:
+        raise TqsError(f"This is {KIND_NOUN[kind]}, not {KIND_NOUN[expect]}.")
     ver = raw.get("format_version")
     if isinstance(ver, bool) or not isinstance(ver, int):
         raise TqsError("manifest.json has no valid format_version.")
@@ -184,6 +283,8 @@ def normalise_manifest(raw) -> tuple[dict, list[str]]:
         raise TqsError(f"Unknown format_version {ver}.")
 
     show_raw = raw.get("show")
+    if kind != "show":
+        show_raw = {"name": "", "source": None}   # .tqc/.tqg: a stray show section is ignored
     if not isinstance(show_raw, dict):
         raise TqsError("manifest.json has no show section.")
     source = show_raw.get("source")
@@ -234,6 +335,9 @@ def normalise_manifest(raw) -> tuple[dict, list[str]]:
         raise TqsError(f"This show has {len(cues_raw)} cues; the limit is {MAX_CUES}.")
     seen: set = set()
     cues = [normalise_cue(c, assets, seen) for c in cues_raw]
+    groups = normalise_groups(raw.get("groups"), cues, [c.get("group") if isinstance(c, dict) else None
+                                                        for c in cues_raw], kind, warnings)
+    cues = gather_groups(cues, warnings)
 
     used = {c["asset"] for c in cues if c["asset"]}
     for aid in list(assets):
@@ -242,15 +346,19 @@ def normalise_manifest(raw) -> tuple[dict, list[str]]:
             del assets[aid]
 
     gen = raw.get("generator") if isinstance(raw.get("generator"), dict) else {}
-    return {
-        "format": FORMAT,
+    out = {
+        "format": FORMAT_FOR_KIND[kind],
         "format_version": FORMAT_VERSION,
         "generator": {"name": str(gen.get("name", ""))[:64], "version": str(gen.get("version", ""))[:64]},
         "exported_at": raw.get("exported_at") if isinstance(raw.get("exported_at"), str) else "",
-        "show": show,
-        "assets": assets,
-        "cues": cues,
-    }, warnings
+    }
+    if kind == "show":
+        out["show"] = show
+    if groups:   # written only when there are groups, so group-free files are unchanged from 1.0
+        out["groups"] = groups
+    out["assets"] = assets
+    out["cues"] = cues
+    return out, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +423,40 @@ def check_zip(zf: zipfile.ZipFile, max_total: int) -> tuple[list[zipfile.ZipInfo
     return keep, warnings
 
 
+def check_legacy_zip(zf: zipfile.ZipFile, max_total: int) -> list[zipfile.ZipInfo]:
+    """FORMAT.md 1.3 for a legacy web export (section 5): every rule except the v1 entry list."""
+    infos = zf.infolist()
+    if len(infos) > MAX_ENTRIES:
+        raise TqsError(f"The zip has {len(infos)} files; the limit is {MAX_ENTRIES}.")
+    seen_lower: set = set()
+    total = 0
+    for info in infos:
+        name = info.filename
+        _check_name(name)
+        if info.flag_bits & 0x1:
+            raise TqsError(f"{name} is encrypted. ThornCue can't import encrypted zips.")
+        if _is_symlink(info):
+            raise TqsError(f"{name} is a symbolic link, which isn't allowed.")
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            raise TqsError(f"{name} uses an unsupported compression method.")
+        low = name.lower()
+        if low in seen_lower:
+            raise TqsError(f"The zip has two files called {name!r} (ignoring case).")
+        seen_lower.add(low)
+        if info.file_size > RATIO_MIN_SIZE and info.file_size > MAX_RATIO * max(1, info.compress_size):
+            raise TqsError(f"{name} is compressed suspiciously well; refusing it as a possible zip bomb.")
+        total += info.file_size
+    if total > max_total:
+        raise TqsError(f"The zip unpacks to {total / 1024 ** 2:.0f} MB, over the "
+                       f"{max_total / 1024 ** 2:.0f} MB import limit.")
+    return infos
+
+
+def copy_counted(src, dst, limit: int, name: str) -> tuple[int, str]:
+    """Copy bytes, refusing to go past `limit`. Returns (bytes, sha256 hex)."""
+    return _copy_counted(src, dst, limit, name)
+
+
 def _copy_counted(src, dst, limit: int, name: str) -> tuple[int, str]:
     """Copy bytes, refusing to go past `limit`. Returns (bytes, sha256 hex)."""
     h = hashlib.sha256()
@@ -358,19 +500,22 @@ def sniff_audio(path: Path) -> str | None:
 # Reading
 # ---------------------------------------------------------------------------
 
-def read_package(path, extract_to=None, max_total: int = DEFAULT_MAX_TOTAL) -> tuple[dict, list[str]]:
+def read_package(path, extract_to=None, max_total: int = DEFAULT_MAX_TOTAL, audio_check=None,
+                 expect: str | None = None) -> tuple[dict, list[str]]:
     """
     Validate a .tqs file. If extract_to is given, audio ends up in extract_to/audio/
     and manifest.json (normalised) in extract_to/. Nothing is written there on failure.
+    `audio_check(path) -> bool` is an optional extra content check run on each audio file.
+    `expect` ("show", "cues", "group") refuses other kinds; None accepts all three.
     """
     path = Path(path)
     if not zipfile.is_zipfile(path):
-        raise TqsError("This file isn't a ThornCue show (it isn't a zip archive).")
+        raise TqsError("This file isn't a ThornCue file (it isn't a zip archive).")
     with zipfile.ZipFile(path) as zf:
         entries, warnings = check_zip(zf, max_total)
         by_name = {i.filename: i for i in entries}
         if "manifest.json" not in by_name:
-            raise TqsError("This file isn't a ThornCue show (no manifest.json).")
+            raise TqsError("This file isn't a ThornCue file (no manifest.json).")
         if entries[0].filename != "manifest.json":
             warnings.append("manifest.json isn't the first entry (writers should put it first).")
         minfo = by_name["manifest.json"]
@@ -390,7 +535,7 @@ def read_package(path, extract_to=None, max_total: int = DEFAULT_MAX_TOTAL) -> t
             raw = json.loads(text, parse_constant=lambda c: (_ for _ in ()).throw(TqsError(f"manifest.json contains {c}.")))
         except json.JSONDecodeError as e:
             raise TqsError(f"manifest.json isn't valid JSON ({e.msg}, line {e.lineno}).")
-        manifest, w2 = normalise_manifest(raw)
+        manifest, w2 = normalise_manifest(raw, expect)
         warnings += w2
 
         wanted = {a["path"]: aid for aid, a in manifest["assets"].items()}
@@ -418,7 +563,7 @@ def read_package(path, extract_to=None, max_total: int = DEFAULT_MAX_TOTAL) -> t
                 if digest != asset["sha256"]:
                     raise TqsError(f"{p} is damaged (checksum doesn't match).")
                 kind = sniff_audio(out_path)
-                if kind is None:
+                if kind is None or (audio_check is not None and not audio_check(out_path)):
                     raise TqsError(f"{p} doesn't look like an audio file.")
             if extract_to:
                 (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), "utf-8")
@@ -451,8 +596,11 @@ def now_rfc3339() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def build_manifest(show: dict, cues: list[dict], asset_files: dict, generator=("tqs_ref", "1")) -> dict:
-    """asset_files: {asset_id: Path}. Cues whose asset file is missing get asset null."""
+def build_manifest(show: dict | None, cues: list[dict], asset_files: dict, generator=("tqs_ref", "1"), *,
+                   kind: str = "show", groups: list[dict] | None = None) -> dict:
+    """asset_files: {asset_id: Path}. Cues whose asset file is missing get asset null.
+    kind: "show" (.tqs, needs `show`), "cues" (.tqc) or "group" (.tqg, `groups` has exactly one
+    group and every cue's "group" is its id). Cues carry "group" for group membership."""
     assets = {}
     for aid, p in asset_files.items():
         p = Path(p)
@@ -470,25 +618,28 @@ def build_manifest(show: dict, cues: list[dict], asset_files: dict, generator=("
             c["asset"] = None
         out_cues.append(c)
     raw = {
-        "format": FORMAT,
+        "format": FORMAT_FOR_KIND[kind],
         "format_version": FORMAT_VERSION,
         "generator": {"name": generator[0], "version": generator[1]},
         "exported_at": now_rfc3339(),
-        "show": show,
         "assets": assets,
         "cues": out_cues,
     }
-    manifest, _ = normalise_manifest(raw)  # writers must emit a valid manifest
+    if kind == "show":
+        raw["show"] = show
+    if groups:
+        raw["groups"] = groups
+    manifest, _ = normalise_manifest(raw, kind)  # writers must emit a valid manifest
     manifest["exported_at"] = raw["exported_at"]
     return manifest
 
 
-def write_package(path, show: dict, cues: list[dict], asset_files: dict, generator=("tqs_ref", "1"),
-                  manifest: dict | None = None) -> dict:
-    """Write a .tqs atomically. Pass `manifest` to write one verbatim (fixtures only)."""
+def write_package(path, show: dict | None, cues: list[dict], asset_files: dict, generator=("tqs_ref", "1"),
+                  manifest: dict | None = None, *, kind: str = "show", groups: list[dict] | None = None) -> dict:
+    """Write a .tqs/.tqc/.tqg atomically. Pass `manifest` to write one verbatim (fixtures only)."""
     path = Path(path)
     if manifest is None:
-        manifest = build_manifest(show, cues, asset_files, generator)
+        manifest = build_manifest(show, cues, asset_files, generator, kind=kind, groups=groups)
     tmp = path.with_name(path.name + ".part")
     with zipfile.ZipFile(tmp, "w", allowZip64=True) as zf:
         zf.writestr(zipfile.ZipInfo("manifest.json", date_time=(2026, 1, 1, 0, 0, 0)),
@@ -580,8 +731,12 @@ def _summary(m: dict) -> str:
     kinds: dict = {}
     for c in m["cues"]:
         kinds[c["type"]] = kinds.get(c["type"], 0) + 1
-    return (f'{m["show"]["name"]}: {len(m["cues"])} cues '
-            f'({", ".join(f"{v} {k}" for k, v in kinds.items()) or "none"}), '
+    kind = FORMATS[m["format"]]
+    title = m["show"]["name"] if kind == "show" else (
+        f'group "{m["groups"][0]["name"]}"' if kind == "group" else "cue file")
+    groups = f', {len(m.get("groups", []))} groups' if kind == "show" and m.get("groups") else ""
+    return (f'{title}: {len(m["cues"])} cues '
+            f'({", ".join(f"{v} {k}" for k, v in kinds.items()) or "none"}){groups}, '
             f'{len(m["assets"])} audio files, {total / 1024 / 1024:.1f} MiB')
 
 

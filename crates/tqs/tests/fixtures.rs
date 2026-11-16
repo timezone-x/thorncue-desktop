@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use tqs::{Limits, Manifest, TqsError};
+use tqs::{Kind, Limits, Manifest, TqsError};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/format/fixtures")
@@ -84,6 +84,11 @@ fn manifest_on_disk(dir: &Path) -> Manifest {
         .0
 }
 
+/// Read a package of any of the three kinds.
+fn read_any(path: &Path, dest: &Path) -> tqs::Result<(Manifest, Vec<tqs::Warning>)> {
+    tqs::read_package_of(path, dest, Limits::default(), &Kind::ALL, &mut |_| {})
+}
+
 fn dir_is_empty(dir: &Path) -> bool {
     std::fs::read_dir(dir).unwrap().next().is_none()
 }
@@ -95,9 +100,8 @@ fn valid_fixtures_import_and_match_expected() {
         let file = f["file"].as_str().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let dest = parent.path().join("show");
-        let (manifest, warnings) =
-            tqs::read_package(&fixtures().join(file), &dest, Limits::default())
-                .unwrap_or_else(|e| panic!("{file} should import: {e}"));
+        let (manifest, warnings) = read_any(&fixtures().join(file), &dest)
+            .unwrap_or_else(|e| panic!("{file} should import: {e}"));
         assert_matches_expected(&manifest, f["expected"].as_str().unwrap());
         assert_eq!(
             manifest_on_disk(&dest),
@@ -117,7 +121,7 @@ fn valid_fixtures_import_and_match_expected() {
         println!("{file}: ok, {} warnings: {warnings:?}", warnings.len());
         n += 1;
     }
-    assert_eq!(n, 5);
+    assert_eq!(n, 10);
 }
 
 #[test]
@@ -127,7 +131,7 @@ fn invalid_fixtures_are_rejected_and_leave_nothing() {
         let file = f["file"].as_str().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let dest = parent.path().join("show");
-        match tqs::read_package(&fixtures().join(file), &dest, Limits::default()) {
+        match read_any(&fixtures().join(file), &dest) {
             Ok(_) => panic!("{file} ({}) should be rejected", f["about"]),
             Err(TqsError::Invalid(msg)) => {
                 assert!(
@@ -359,4 +363,151 @@ fn detect_kind_tells_shows_from_web_exports() {
         PackageKind::LegacyWebExport
     );
     assert!(tqs::detect_kind(&f.join("invalid/not-a-zip.tqs")).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Spec 1.1: groups, cue files, group files
+// ---------------------------------------------------------------------------
+
+/// A show with groups that goes through the desktop and back out keeps every group, every
+/// cue's membership and the cue order (CLAUDE.md rule 4, "never lose a show").
+#[test]
+fn groups_survive_a_round_trip() {
+    let parent = tempfile::tempdir().unwrap();
+    let first = parent.path().join("first");
+    let (m1, w) = tqs::read_package(
+        &fixtures().join("valid/06-groups.tqs"),
+        &first,
+        Limits::default(),
+    )
+    .unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    let names: Vec<_> = m1.groups.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, ["Act 1", "Storm"]);
+    assert_eq!(m1.groups[0].color, "#3e7bd6", "colours are lowercased");
+
+    let out = parent.path().join("Again.tqs");
+    tqs::write_package(&first, &out).unwrap();
+    let (m2, w) =
+        tqs::read_package(&out, &parent.path().join("second"), Limits::default()).unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(m2.groups, m1.groups);
+    let membership = |m: &Manifest| -> Vec<(String, Option<String>)> {
+        m.cues
+            .iter()
+            .map(|c| (c.id.clone(), c.group.clone()))
+            .collect()
+    };
+    assert_eq!(membership(&m2), membership(&m1));
+    assert_matches_expected(&m2, "expected/06-groups.json");
+}
+
+/// FORMAT.md 2.1: writers omit `groups` when there are none, so group-free files are what a
+/// 1.0 writer produced; cue `group` is only written for grouped cues.
+#[test]
+fn group_free_shows_are_written_as_before() {
+    let parent = tempfile::tempdir().unwrap();
+    let show = parent.path().join("show");
+    tqs::read_package(
+        &fixtures().join("valid/02-all-features.tqs"),
+        &show,
+        Limits::default(),
+    )
+    .unwrap();
+    let on_disk: Value =
+        serde_json::from_slice(&std::fs::read(show.join("manifest.json")).unwrap()).unwrap();
+    assert!(on_disk.get("groups").is_none());
+    assert!(
+        on_disk["cues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("group").is_none())
+    );
+
+    let grouped = parent.path().join("grouped");
+    tqs::read_package(
+        &fixtures().join("valid/06-groups.tqs"),
+        &grouped,
+        Limits::default(),
+    )
+    .unwrap();
+    let on_disk: Value =
+        serde_json::from_slice(&std::fs::read(grouped.join("manifest.json")).unwrap()).unwrap();
+    let cues = on_disk["cues"].as_array().unwrap();
+    assert!(
+        cues[0].get("group").is_none(),
+        "ungrouped cues have no group key"
+    );
+    assert_eq!(cues[1]["group"], "act1");
+}
+
+/// Opening a cue file or group file as a show says what it is (FORMAT.md 2.1), and leaves
+/// nothing behind.
+#[test]
+fn cue_and_group_files_are_not_shows() {
+    for (file, says) in [
+        (
+            "valid/07-cues.tqc",
+            "This is a cue file (.tqc), not a show (.tqs).",
+        ),
+        (
+            "valid/08-group.tqg",
+            "This is a group file (.tqg), not a show (.tqs).",
+        ),
+    ] {
+        let parent = tempfile::tempdir().unwrap();
+        let err = tqs::read_package(
+            &fixtures().join(file),
+            &parent.path().join("s"),
+            Limits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), says);
+        assert!(dir_is_empty(parent.path()), "{file} left files behind");
+    }
+}
+
+#[test]
+fn cue_and_group_files_have_no_show_section() {
+    let parent = tempfile::tempdir().unwrap();
+    for (file, kind) in [
+        ("valid/07-cues.tqc", Kind::Cues),
+        ("valid/08-group.tqg", Kind::Group),
+        ("valid/10-cues-with-groups.tqc", Kind::Cues),
+    ] {
+        let dest = parent
+            .path()
+            .join(kind.extension())
+            .join(file.replace('/', "-"));
+        let (m, w) = read_any(&fixtures().join(file), &dest).unwrap();
+        assert_eq!(m.kind, kind);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["format"], kind.format_name());
+        assert!(v.get("show").is_none(), "{file}");
+        if file.starts_with("valid/10") {
+            assert!(m.groups.is_empty() && m.cues.iter().all(|c| c.group.is_none()));
+            assert!(w.iter().any(|w| w.0.contains("Ignoring groups")), "{w:?}");
+        }
+    }
+}
+
+#[test]
+fn groups_that_need_normalising_say_so() {
+    let parent = tempfile::tempdir().unwrap();
+    let (m, w) = tqs::read_package(
+        &fixtures().join("valid/09-groups-need-normalising.tqs"),
+        &parent.path().join("s"),
+        Limits::default(),
+    )
+    .unwrap();
+    let w = w
+        .iter()
+        .map(|w| w.0.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(w.contains("moved together"), "{w}");
+    assert!(w.contains("has no cues; dropping it"), "{w}");
+    assert!(w.contains("invalid colour"), "{w}");
+    assert_eq!(m.groups.len(), 2);
 }

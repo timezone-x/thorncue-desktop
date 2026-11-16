@@ -1,0 +1,61 @@
+{
+  "format": "thorncue.cues",
+  "format_version": 1,
+  "assets": {
+    "bell": {
+      "path": "audio/bell.flac",
+      "sha256": "087ad63aceb7ebc7d9dfd7d149353f2ce973a254a72066ea39f055d15c33fe3f",
+      "bytes": 21616
+    }
+  },
+  "cues": [
+    {
+      "id": "c1",
+      "type": "audio",
+      "name": "Doorbell",
+      "asset": "bell",
+      "volume": 0.9,
+      "fade_in": 0.0,
+      "fade_out": 0.5,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "c2",
+      "type": "silence",
+      "name": "Beat",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.5,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "c3",
+      "type": "audio",
+      "name": "Doorbell again",
+      "asset": "bell",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

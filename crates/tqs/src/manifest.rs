@@ -12,19 +12,126 @@ use serde_json::{Map, Value};
 use crate::error::{Result, TqsError, Warning};
 use crate::{MAX_CUES, MAX_CUTS};
 
+/// The `format` of a show. Cue files and group files use [`Kind::Cues`] and [`Kind::Group`].
 pub const FORMAT: &str = "thorncue.show";
 pub const FORMAT_VERSION: u64 = 1;
+pub const MAX_GROUPS: usize = 200;
+pub const DEFAULT_GROUP_COLOR: &str = "#3e7bd6";
+
+/// Which of the three package kinds a manifest is (FORMAT.md 2.1): they share one container
+/// and one manifest and differ only in which top-level sections they have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum Kind {
+    /// `.tqs`, `thorncue.show`.
+    #[serde(rename = "thorncue.show")]
+    Show,
+    /// `.tqc`, `thorncue.cues`: cues and their audio, no show section, no groups.
+    #[serde(rename = "thorncue.cues")]
+    Cues,
+    /// `.tqg`, `thorncue.group`: exactly one group and its cues.
+    #[serde(rename = "thorncue.group")]
+    Group,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 3] = [Kind::Show, Kind::Cues, Kind::Group];
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "thorncue.show" => Some(Self::Show),
+            "thorncue.cues" => Some(Self::Cues),
+            "thorncue.group" => Some(Self::Group),
+            _ => None,
+        }
+    }
+
+    pub fn format_name(self) -> &'static str {
+        match self {
+            Self::Show => "thorncue.show",
+            Self::Cues => "thorncue.cues",
+            Self::Group => "thorncue.group",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Show => "tqs",
+            Self::Cues => "tqc",
+            Self::Group => "tqg",
+        }
+    }
+
+    /// "a show (.tqs)", for "This is a cue file (.tqc), not a show (.tqs)."
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Show => "a show (.tqs)",
+            Self::Cues => "a cue file (.tqc)",
+            Self::Group => "a group file (.tqg)",
+        }
+    }
+}
 pub const AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "ogg", "flac", "m4a", "aiff", "aif"];
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
-    pub format: String,
+    /// Written as `format`.
+    pub kind: Kind,
     pub format_version: u64,
     pub generator: Generator,
     pub exported_at: String,
+    /// Shows only. For `.tqc`/`.tqg` it is a blank placeholder and is never written.
     pub show: Show,
+    /// FORMAT.md 2.7. Never empty-but-referenced: every group here has at least one cue, and
+    /// each group's cues are consecutive. Written only when non-empty.
+    pub groups: Vec<Group>,
     pub assets: IndexMap<String, Asset>,
     pub cues: Vec<Cue>,
+    pub extra: Map<String, Value>,
+}
+
+/// How a manifest goes on the wire: `show` only for shows, `groups` only when there are any,
+/// so a group-free show is exactly what a 1.0 writer produced (FORMAT.md 2.1).
+#[derive(Serialize)]
+struct Wire<'a> {
+    format: Kind,
+    format_version: u64,
+    generator: &'a Generator,
+    exported_at: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show: Option<&'a Show>,
+    #[serde(skip_serializing_if = "<[Group]>::is_empty")]
+    groups: &'a [Group],
+    assets: &'a IndexMap<String, Asset>,
+    cues: &'a [Cue],
+    #[serde(flatten)]
+    extra: &'a Map<String, Value>,
+}
+
+impl Serialize for Manifest {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        Wire {
+            format: self.kind,
+            format_version: self.format_version,
+            generator: &self.generator,
+            exported_at: &self.exported_at,
+            show: (self.kind == Kind::Show).then_some(&self.show),
+            groups: &self.groups,
+            assets: &self.assets,
+            cues: &self.cues,
+            extra: &self.extra,
+        }
+        .serialize(s)
+    }
+}
+
+/// A named, coloured label around a run of consecutive cues (FORMAT.md 2.7). Never changes
+/// playback.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    /// `#rrggbb`, lowercase.
+    pub color: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -117,13 +224,21 @@ pub struct Cue {
     pub trim_start: f64,
     pub trim_end: Option<f64>,
     pub cuts: Vec<[f64; 2]>,
+    /// The group this cue is in (FORMAT.md 2.7). Written only when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
 impl Manifest {
-    /// Parse and normalise `manifest.json` bytes (UTF-8, no BOM).
+    /// Parse and normalise `manifest.json` bytes (UTF-8, no BOM) of any kind.
     pub fn from_slice(bytes: &[u8]) -> Result<(Manifest, Vec<Warning>)> {
+        Self::from_slice_of(bytes, &Kind::ALL)
+    }
+
+    /// As [`Manifest::from_slice`], refusing kinds not in `accept`.
+    pub fn from_slice_of(bytes: &[u8], accept: &[Kind]) -> Result<(Manifest, Vec<Warning>)> {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| TqsError::invalid("manifest.json isn't valid UTF-8 text."))?;
         if text.starts_with('\u{feff}') {
@@ -138,7 +253,7 @@ impl Manifest {
                 e.column()
             ))
         })?;
-        normalise_manifest(&raw)
+        normalise_manifest_of(&raw, accept)
     }
 
     /// Pretty JSON, as written into packages and library folders.
@@ -277,7 +392,7 @@ pub fn normalise_cuts(raw: Option<&Value>, cue: &str) -> Result<Vec<[f64; 2]>> {
     Ok(merged)
 }
 
-const CUE_FIELDS: [&str; 14] = [
+const CUE_FIELDS: [&str; 15] = [
     "id",
     "type",
     "name",
@@ -292,6 +407,7 @@ const CUE_FIELDS: [&str; 14] = [
     "trim_start",
     "trim_end",
     "cuts",
+    "group",
 ];
 
 fn normalise_cue(
@@ -420,6 +536,7 @@ fn normalise_cue(
         },
         looping: looping && is_audio,
         cuts: normalise_cuts(obj.get("cuts"), &name)?,
+        group: None, // set by normalise_groups
         extra: extra_fields(obj, &CUE_FIELDS),
         id,
         cue_type,
@@ -432,19 +549,194 @@ fn normalise_cue(
 }
 
 // ---------------------------------------------------------------------------
+// Groups (FORMAT.md 2.7, 6.2, 6.3)
+// ---------------------------------------------------------------------------
+
+fn is_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Read `groups` and each cue's `group`, applying 2.7's rules 1 and 3 (and 6.2/6.3 for cue
+/// and group files). Rule 2, pulling a group's cues together, is [`gather_groups`].
+fn normalise_groups(
+    raw: Option<&Value>,
+    cues: &mut [Cue],
+    cues_raw: &[Value],
+    kind: Kind,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<Group>> {
+    let raw: &[Value] = match raw {
+        None | Some(Value::Null) => &[],
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err(TqsError::invalid("groups must be a list.")),
+    };
+    let refs: Vec<Option<&Value>> = cues_raw
+        .iter()
+        .map(|c| c.get("group").filter(|g| !g.is_null()))
+        .collect();
+    if kind == Kind::Cues {
+        if !raw.is_empty() || refs.iter().any(Option::is_some) {
+            warnings.push(Warning(
+                "Ignoring groups in a cue file (.tqc files don't carry groups).".into(),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    if raw.len() > MAX_GROUPS {
+        return Err(TqsError::invalid(format!(
+            "This file has {} groups; the limit is {MAX_GROUPS}.",
+            raw.len()
+        )));
+    }
+    let mut groups: Vec<Group> = Vec::with_capacity(raw.len());
+    for g in raw {
+        let g = g
+            .as_object()
+            .ok_or_else(|| TqsError::invalid("Every group must be an object."))?;
+        let id = match g.get("id") {
+            Some(Value::String(id)) if is_id(id) => id.clone(),
+            other => {
+                let shown = other.map(describe).unwrap_or_else(|| "nothing".into());
+                return Err(TqsError::invalid(format!(
+                    "Group id {shown} is not valid. Ids use only a-z, 0-9, - and _."
+                )));
+            }
+        };
+        if groups.iter().any(|x| x.id == id) {
+            return Err(TqsError::invalid(format!(
+                "Two groups share the id \"{id}\"."
+            )));
+        }
+        let name = text(g.get("name"), "Group", 60, &format!("Group {id}: name"))?;
+        let color = match g.get("color") {
+            None | Some(Value::Null) => DEFAULT_GROUP_COLOR.to_string(),
+            Some(Value::String(c)) if is_color(c) => c.to_ascii_lowercase(),
+            Some(Value::String(c)) => {
+                warnings.push(Warning(format!(
+                    "Group \"{name}\" has an invalid colour \"{c}\"; using the default."
+                )));
+                DEFAULT_GROUP_COLOR.to_string()
+            }
+            Some(_) => {
+                return Err(TqsError::invalid(format!(
+                    "Group \"{name}\": colour must be text."
+                )));
+            }
+        };
+        groups.push(Group {
+            id,
+            name,
+            color,
+            extra: extra_fields(g, &["id", "name", "color"]),
+        });
+    }
+    for (cue, r) in cues.iter_mut().zip(refs) {
+        let Some(r) = r else { continue };
+        let Some(gid) = r.as_str() else {
+            return Err(TqsError::invalid(format!(
+                "Cue \"{}\": group must be text or null.",
+                cue.name
+            )));
+        };
+        if !groups.iter().any(|g| g.id == gid) {
+            return Err(TqsError::invalid(format!(
+                "Cue \"{}\" is in group \"{gid}\", which isn't in the file.",
+                cue.name
+            )));
+        }
+        cue.group = Some(gid.to_string());
+    }
+    if kind == Kind::Group {
+        if groups.len() != 1 {
+            return Err(TqsError::invalid(format!(
+                "A group file (.tqg) must hold exactly one group; this one has {}.",
+                groups.len()
+            )));
+        }
+        if cues.is_empty() {
+            return Err(TqsError::invalid("This group file (.tqg) has no cues."));
+        }
+        let only = &groups[0];
+        if cues.iter().any(|c| c.group.as_deref() != Some(&only.id)) {
+            return Err(TqsError::invalid(format!(
+                "Every cue in a group file must be in its group (\"{}\").",
+                only.name
+            )));
+        }
+    }
+    groups.retain(|g| {
+        let used = cues.iter().any(|c| c.group.as_deref() == Some(&g.id));
+        if !used {
+            warnings.push(Warning(format!(
+                "Group \"{}\" has no cues; dropping it.",
+                g.name
+            )));
+        }
+        used
+    });
+    Ok(groups)
+}
+
+/// Pull each group's cues together at the position of its first cue, keeping their order;
+/// ungrouped cues keep their order relative to everything else (FORMAT.md 2.7 rule 2).
+pub fn gather_groups(cues: Vec<Cue>, warnings: &mut Vec<Warning>) -> Vec<Cue> {
+    let before: Vec<String> = cues.iter().map(|c| c.id.clone()).collect();
+    let mut slots: Vec<Option<Cue>> = cues.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(slots.len());
+    for i in 0..slots.len() {
+        let Some(c) = slots[i].take() else { continue };
+        let Some(gid) = c.group.clone() else {
+            out.push(c);
+            continue;
+        };
+        out.push(c);
+        for slot in slots.iter_mut().skip(i + 1) {
+            if slot
+                .as_ref()
+                .is_some_and(|x| x.group.as_ref() == Some(&gid))
+            {
+                out.push(slot.take().expect("checked"));
+            }
+        }
+    }
+    if out.iter().map(|c| &c.id).ne(before.iter()) {
+        warnings.push(Warning(
+            "Some groups' cues weren't next to each other; they've been moved together.".into(),
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // The whole manifest
 // ---------------------------------------------------------------------------
 
-/// Validate and normalise a parsed manifest (tqs_ref.py `normalise_manifest`).
+/// Validate and normalise a parsed manifest of any kind (tqs_ref.py `normalise_manifest`).
 pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
+    normalise_manifest_of(raw, &Kind::ALL)
+}
+
+/// As [`normalise_manifest`], refusing kinds not in `accept` with a message that says what
+/// the file is ("This is a cue file (.tqc), not a show (.tqs).").
+pub fn normalise_manifest_of(raw: &Value, accept: &[Kind]) -> Result<(Manifest, Vec<Warning>)> {
     let mut warnings = Vec::new();
     let obj = raw
         .as_object()
         .ok_or_else(|| TqsError::invalid("manifest.json must be a JSON object."))?;
-    if obj.get("format").and_then(Value::as_str) != Some(FORMAT) {
+    let Some(kind) = obj
+        .get("format")
+        .and_then(Value::as_str)
+        .and_then(Kind::parse)
+    else {
         return Err(TqsError::invalid(
-            "This isn't a ThornCue show (manifest.json has the wrong format name).",
+            "This isn't a ThornCue file (manifest.json has an unknown format name).",
         ));
+    };
+    if !accept.contains(&kind) {
+        return Err(TqsError::invalid(match accept {
+            [only] => format!("This is {}, not {}.", kind.noun(), only.noun()),
+            _ => format!("This is {}, which can't be opened here.", kind.noun()),
+        }));
     }
     let version = match obj.get("format_version") {
         Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.as_i64().unwrap_or(i64::MAX),
@@ -465,10 +757,15 @@ pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
         )));
     }
 
-    let show_obj = obj
-        .get("show")
-        .and_then(Value::as_object)
-        .ok_or_else(|| TqsError::invalid("manifest.json has no show section."))?;
+    // .tqc/.tqg: a stray show section is ignored (FORMAT.md 6.1).
+    let blank = Map::new();
+    let show_obj = if kind == Kind::Show {
+        obj.get("show")
+            .and_then(Value::as_object)
+            .ok_or_else(|| TqsError::invalid("manifest.json has no show section."))?
+    } else {
+        &blank
+    };
     let source = match show_obj.get("source") {
         None | Some(Value::Null) => None,
         Some(Value::Object(src)) => {
@@ -571,10 +868,15 @@ pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
         )));
     }
     let mut seen = std::collections::HashSet::new();
-    let cues = cues_raw
+    let mut cues = cues_raw
         .iter()
         .map(|c| normalise_cue(c, &assets, &mut seen))
         .collect::<Result<Vec<_>>>()?;
+    if kind == Kind::Cues && cues.is_empty() {
+        return Err(TqsError::invalid("This cue file (.tqc) has no cues."));
+    }
+    let groups = normalise_groups(obj.get("groups"), &mut cues, cues_raw, kind, &mut warnings)?;
+    let cues = gather_groups(cues, &mut warnings);
 
     let used: std::collections::HashSet<&str> =
         cues.iter().filter_map(|c| c.asset.as_deref()).collect();
@@ -602,7 +904,7 @@ pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
 
     Ok((
         Manifest {
-            format: FORMAT.into(),
+            kind,
             format_version: FORMAT_VERSION,
             generator: Generator {
                 name: gen_field("name"),
@@ -614,6 +916,7 @@ pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
                 .unwrap_or("")
                 .to_string(),
             show,
+            groups,
             assets,
             cues,
             extra: extra_fields(
@@ -624,6 +927,7 @@ pub fn normalise_manifest(raw: &Value) -> Result<(Manifest, Vec<Warning>)> {
                     "generator",
                     "exported_at",
                     "show",
+                    "groups",
                     "assets",
                     "cues",
                 ],

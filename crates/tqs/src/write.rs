@@ -60,6 +60,21 @@ pub fn write_package_with_progress(
             cue.asset = None;
         }
     }
+    // Groups listed in the order they first appear (FORMAT.md 2.7, "writers SHOULD").
+    let first = |id: &str| {
+        manifest
+            .cues
+            .iter()
+            .position(|c| c.group.as_deref() == Some(id))
+    };
+    let mut order: Vec<(Option<usize>, crate::manifest::Group)> =
+        manifest.groups.drain(..).map(|g| (None, g)).collect();
+    for (pos, g) in &mut order {
+        *pos = first(&g.id);
+    }
+    order.sort_by_key(|(pos, _)| *pos);
+    manifest.groups = order.into_iter().map(|(_, g)| g).collect();
+
     manifest.generator = Generator {
         name: "thorncue-desktop".into(),
         version: env!("CARGO_PKG_VERSION").into(),

@@ -2,10 +2,24 @@
 
 `index.json` lists every fixture and what a reader must do with it. Run every implementation against all of them in CI.
 
-- **`valid/*.tqs`**: must import. After import, the normalised manifest must equal `expected/<name>.json` (ignore `generator` and `exported_at`; compare numbers with a tolerance of 1e-9; key order doesn't matter). `03-needs-normalising.tqs` deliberately breaks writer rules (missing fields, out-of-range values, junk entries, an unused audio file) and does **not** pass `manifest.schema.json`. That is the point: readers must clamp and default it into exactly `expected/03-needs-normalising.json`.
+- **`valid/*`**: must import (`.tqs` shows, `.tqc` cue files, `.tqg` group files). After import, the normalised manifest must equal `expected/<name>.json` (ignore `generator` and `exported_at`; compare numbers with a tolerance of 1e-9; key order doesn't matter). `03-needs-normalising.tqs` deliberately breaks writer rules (missing fields, out-of-range values, junk entries, an unused audio file) and does **not** pass `manifest.schema.json`. That is the point: readers must clamp and default it into exactly `expected/03-needs-normalising.json`. The same goes for `09-groups-need-normalising.tqs` (group cues not next to each other, an empty group, a bad colour) and `10-cues-with-groups.tqc` (a cue file carrying a show section and groups, which readers ignore).
 - **`invalid/*`**: must be rejected, with nothing left behind on disk. `rule` says which section of FORMAT.md is being tested. Error wording is up to each implementation, but it must be a sentence a sound operator understands.
 - **`legacy/web-export-STAGE-4821.zip`**: ThornCue Web's original Export ZIP. Importers that support legacy zips must produce `expected/legacy-web-export-STAGE-4821.json` (asset hashes included). `web-export-STAGE-4821.converted.tqs` is what the reference converter wrote, for comparison.
 - **`audio/`**: the raw generated audio, for engine and decoder tests.
+
+## Groups, cue files and group files (spec 1.1)
+
+| Fixture | What it checks |
+|---|---|
+| `06-groups.tqs` | Two groups ("Act 1", "Storm") with ungrouped cues before, between and after; Act 1's colour is written uppercase and must come out lowercase |
+| `07-cues.tqc` | Three cues, two sharing one FLAC; no `show`, no `groups` |
+| `08-group.tqg` | One group ("Storm") with three cues, including a fade-out cue |
+| `09-groups-need-normalising.tqs` | Reader pulls group `a`'s cues together (n1, n3, then n2), drops the empty group, names the unnamed one "Group", replaces the colour `blue` with `#3e7bd6`, keeps `x_icon` out of the expected output |
+| `10-cues-with-groups.tqc` | Readers ignore a `.tqc`'s `show` and `groups` and output a plain cue |
+| `invalid/group-*`, `invalid/groups-not-a-list.tqs` | Broken group references and types are rejections (FORMAT.md 2.7) |
+| `invalid/tqg-*` | A `.tqg` must hold exactly one group, every cue in it, at least one cue (6.3) |
+
+Groups never affect playback, so engine tests don't need these; they're for readers, writers and importers.
 
 ## The audio
 

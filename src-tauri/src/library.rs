@@ -478,7 +478,7 @@ pub fn read_manifest_with_backup(dir: &Path) -> Result<(Manifest, Option<String>
     let main = dir.join("manifest.json");
     let primary = std::fs::read(&main)
         .map_err(anyhow::Error::from)
-        .and_then(|b| Ok(Manifest::from_slice(&b)?.0));
+        .and_then(|b| Ok(Manifest::from_slice_of(&b, &[tqs::Kind::Show])?.0));
     match primary {
         Ok(m) => Ok((m, None)),
         Err(e) => {
@@ -486,7 +486,8 @@ pub fn read_manifest_with_backup(dir: &Path) -> Result<(Manifest, Option<String>
             let bak = dir.join("manifest.json.bak");
             let bytes =
                 std::fs::read(&bak).with_context(|| format!("no backup at {}", bak.display()))?;
-            let (m, _) = Manifest::from_slice(&bytes).context("the backup is damaged too")?;
+            let (m, _) = Manifest::from_slice_of(&bytes, &[tqs::Kind::Show])
+                .context("the backup is damaged too")?;
             let when = std::fs::metadata(&bak)
                 .and_then(|md| md.modified())
                 .ok()
@@ -573,6 +574,8 @@ mod tests {
             "03-needs-normalising",
             "04-empty",
             "05-from-web",
+            "06-groups",
+            "09-groups-need-normalising",
         ] {
             let (id, m, _) = lib
                 .import_file(&fixture(&format!("valid/{f}.tqs")), &mut |_| {})
@@ -583,7 +586,7 @@ mod tests {
             assert!(opened.dir.join("manifest.json.bak").is_file());
         }
         let shows = lib.list().unwrap();
-        assert_eq!(shows.len(), 5);
+        assert_eq!(shows.len(), 7);
         let web = shows.iter().find(|s| s.source.is_some()).unwrap();
         assert!(!web.source.as_ref().unwrap().code.is_empty());
     }
@@ -695,6 +698,76 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(again.cues, m.cues, "identical cues after export and import");
         assert_eq!(again.show.name, "Cinderella");
+    }
+
+    /// Spec 1.1 (thorncue-spec#1): a show with groups, made in the web, keeps its groups
+    /// through the desktop: import, edits, autosave, reopen, duplicate, export, re-import.
+    #[test]
+    fn a_grouped_show_keeps_its_groups_through_the_desktop() {
+        use crate::editing::{Edit, apply};
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        let (id, imported, _) = lib
+            .import_file(&fixture("valid/06-groups.tqs"), &mut |_| {})
+            .unwrap();
+        assert_eq!(imported.groups.len(), 2);
+        let dir = lib.show_dir(&id).unwrap();
+
+        let mut m = lib.open(&id).unwrap().manifest;
+        let patch = serde_json::json!({"volume": 0.5});
+        m = apply(
+            &m,
+            Edit::Update {
+                id: "g06".into(),
+                patch: patch.as_object().unwrap().clone(),
+            },
+        )
+        .unwrap()
+        .0;
+        m = apply(&m, Edit::ShowName("Storm night".into())).unwrap().0;
+        atomic_write(&dir.join("manifest.json"), &m.to_json_pretty()).unwrap();
+
+        let reopened = lib.open(&id).unwrap().manifest;
+        assert_eq!(reopened, m);
+        assert_eq!(reopened.groups, imported.groups);
+        let membership = |m: &Manifest| -> Vec<Option<String>> {
+            m.cues.iter().map(|c| c.group.clone()).collect()
+        };
+        assert_eq!(membership(&reopened), membership(&imported));
+
+        let copy = lib
+            .open(&lib.duplicate_show(&id).unwrap())
+            .unwrap()
+            .manifest;
+        assert_eq!(copy.groups, imported.groups);
+        assert_eq!(membership(&copy), membership(&imported));
+
+        let out = data.path().join("Storm night.tqs");
+        tqs::write_package(&dir, &out).unwrap();
+        let (_, again, warnings) = lib.import_file(&out, &mut |_| {}).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.groups, imported.groups);
+        assert_eq!(again.cues, m.cues);
+    }
+
+    #[test]
+    fn cue_and_group_files_are_refused_as_shows() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        for (f, says) in [
+            (
+                "valid/07-cues.tqc",
+                "This is a cue file (.tqc), not a show (.tqs).",
+            ),
+            (
+                "valid/08-group.tqg",
+                "This is a group file (.tqg), not a show (.tqs).",
+            ),
+        ] {
+            let err = lib.import_file(&fixture(f), &mut |_| {}).unwrap_err();
+            assert!(format!("{err:#}").contains(says), "{err:#}");
+        }
+        assert!(visible_entries(lib.root()).is_empty());
     }
 
     #[test]

@@ -1,0 +1,108 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Messy groups",
+    "author": "",
+    "notes": "",
+    "source": null
+  },
+  "groups": [
+    {
+      "id": "a",
+      "name": "Group",
+      "color": "#3e7bd6"
+    },
+    {
+      "id": "b",
+      "name": "B",
+      "color": "#abcdef"
+    }
+  ],
+  "assets": {},
+  "cues": [
+    {
+      "id": "n1",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "a"
+    },
+    {
+      "id": "n3",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "a"
+    },
+    {
+      "id": "n2",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "n4",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "b"
+    },
+    {
+      "id": "n5",
+      "type": "silence",
+      "name": "Untitled cue",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    }
+  ]
+}

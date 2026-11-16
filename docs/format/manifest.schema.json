@@ -1,40 +1,102 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://thorncue.app/schema/tqs/1/manifest.schema.json",
-  "title": "ThornCue show package manifest, format_version 1",
-  "description": "Shape and types of manifest.json inside a .tqs file. FORMAT.md is normative: readers clamp out-of-range numbers instead of rejecting, and cross-reference, zip-safety and hash rules live there. This schema is strict on purpose so writers can test their output against it.",
+  "$id": "https://thorncue.app/schema/tq/1/manifest.schema.json",
+  "title": "ThornCue package manifest (.tqs, .tqc, .tqg), format_version 1",
+  "description": "Shape and types of manifest.json inside a .tqs, .tqc or .tqg file. FORMAT.md is normative: readers clamp out-of-range numbers instead of rejecting, and cross-reference, zip-safety, grouping and hash rules live there. This schema is strict on purpose so writers can test their output against it.",
   "type": "object",
-  "required": ["format", "format_version", "generator", "exported_at", "show", "assets", "cues"],
+  "required": [
+    "format",
+    "format_version",
+    "generator",
+    "exported_at",
+    "assets",
+    "cues"
+  ],
   "properties": {
-    "format": { "const": "thorncue.show" },
-    "format_version": { "const": 1 },
+    "format": {
+      "enum": [
+        "thorncue.show",
+        "thorncue.cues",
+        "thorncue.group"
+      ]
+    },
+    "format_version": {
+      "const": 1
+    },
     "generator": {
       "type": "object",
-      "required": ["name", "version"],
+      "required": [
+        "name",
+        "version"
+      ],
       "properties": {
-        "name": { "type": "string", "maxLength": 64 },
-        "version": { "type": "string", "maxLength": 64 }
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        }
       }
     },
-    "exported_at": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$" },
+    "exported_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
     "show": {
       "type": "object",
-      "required": ["name", "author", "notes", "source"],
+      "required": [
+        "name",
+        "author",
+        "notes",
+        "source"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "author": { "type": "string", "maxLength": 100 },
-        "notes": { "type": "string", "maxLength": 2000 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        },
         "source": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "object",
-              "required": ["kind", "server", "code", "revision"],
+              "required": [
+                "kind",
+                "server",
+                "code",
+                "revision"
+              ],
               "properties": {
-                "kind": { "type": "string" },
-                "server": { "type": "string", "pattern": "^https?://[^/]+$" },
-                "code": { "type": "string", "minLength": 1, "maxLength": 64 },
-                "revision": { "type": "string", "minLength": 1, "maxLength": 128 }
+                "kind": {
+                  "type": "string"
+                },
+                "server": {
+                  "type": "string",
+                  "pattern": "^https?://[^/]+$"
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "revision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
               }
             }
           ]
@@ -43,57 +105,288 @@
     },
     "assets": {
       "type": "object",
-      "propertyNames": { "pattern": "^[a-z0-9_-]{1,64}$" },
+      "propertyNames": {
+        "pattern": "^[a-z0-9_-]{1,64}$"
+      },
       "additionalProperties": {
         "type": "object",
-        "required": ["path", "sha256", "bytes"],
+        "required": [
+          "path",
+          "sha256",
+          "bytes"
+        ],
         "properties": {
-          "path": { "type": "string", "pattern": "^audio/[a-z0-9_-]{1,64}\\.(mp3|wav|ogg|flac|m4a|aiff|aif)$" },
-          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "bytes": { "type": "integer", "minimum": 1 }
+          "path": {
+            "type": "string",
+            "pattern": "^audio/[a-z0-9_-]{1,64}\\.(mp3|wav|ogg|flac|m4a|aiff|aif)$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
     "cues": {
       "type": "array",
       "maxItems": 2000,
-      "items": { "$ref": "#/$defs/cue" }
+      "items": {
+        "$ref": "#/$defs/cue"
+      }
+    },
+    "groups": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/group"
+      }
     }
   },
   "$defs": {
-    "seconds600": { "type": "number", "minimum": 0, "maximum": 600 },
-    "seconds3600": { "type": "number", "minimum": 0, "maximum": 3600 },
+    "seconds600": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 600
+    },
+    "seconds3600": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 3600
+    },
     "cue": {
       "type": "object",
-      "required": ["id", "type", "name", "asset", "volume", "fade_in", "fade_out", "pre_wait", "duration",
-                   "loop", "continue", "trim_start", "trim_end", "cuts"],
+      "required": [
+        "id",
+        "type",
+        "name",
+        "asset",
+        "volume",
+        "fade_in",
+        "fade_out",
+        "pre_wait",
+        "duration",
+        "loop",
+        "continue",
+        "trim_start",
+        "trim_end",
+        "cuts"
+      ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9_-]{1,64}$" },
-        "type": { "enum": ["audio", "silence", "fadeout"] },
-        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "asset": { "type": ["string", "null"], "pattern": "^[a-z0-9_-]{1,64}$" },
-        "volume": { "type": "number", "minimum": 0, "maximum": 2 },
-        "fade_in": { "$ref": "#/$defs/seconds600" },
-        "fade_out": { "$ref": "#/$defs/seconds600" },
-        "pre_wait": { "$ref": "#/$defs/seconds3600" },
-        "duration": { "$ref": "#/$defs/seconds3600" },
-        "loop": { "type": "boolean" },
-        "continue": { "enum": ["none", "after_end"] },
-        "trim_start": { "type": "number", "minimum": 0 },
-        "trim_end": { "type": ["number", "null"], "minimum": 0 },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,64}$"
+        },
+        "type": {
+          "enum": [
+            "audio",
+            "silence",
+            "fadeout"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "asset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z0-9_-]{1,64}$"
+        },
+        "volume": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "fade_in": {
+          "$ref": "#/$defs/seconds600"
+        },
+        "fade_out": {
+          "$ref": "#/$defs/seconds600"
+        },
+        "pre_wait": {
+          "$ref": "#/$defs/seconds3600"
+        },
+        "duration": {
+          "$ref": "#/$defs/seconds3600"
+        },
+        "loop": {
+          "type": "boolean"
+        },
+        "continue": {
+          "enum": [
+            "none",
+            "after_end"
+          ]
+        },
+        "trim_start": {
+          "type": "number",
+          "minimum": 0
+        },
+        "trim_end": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "cuts": {
           "type": "array",
           "maxItems": 50,
           "items": {
             "type": "array",
-            "prefixItems": [{ "type": "number", "minimum": 0 }, { "type": "number", "minimum": 0 }],
+            "prefixItems": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              }
+            ],
             "minItems": 2,
             "maxItems": 2
           }
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,64}$",
+          "description": "Group id. Written only for cues in a group; absent means ungrouped."
         }
       },
-      "if": { "properties": { "type": { "enum": ["silence", "fadeout"] } } },
-      "then": { "properties": { "asset": { "type": "null" } } }
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "silence",
+              "fadeout"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "asset": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "color"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,64}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9a-f]{6}$"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "format": {
+            "const": "thorncue.show"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "show"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "format": {
+            "const": "thorncue.cues"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "show"
+              ]
+            },
+            {
+              "required": [
+                "groups"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "cues": {
+            "minItems": 1,
+            "items": {
+              "not": {
+                "required": [
+                  "group"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "format": {
+            "const": "thorncue.group"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "show"
+          ]
+        },
+        "required": [
+          "groups"
+        ],
+        "properties": {
+          "groups": {
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "cues": {
+            "minItems": 1,
+            "items": {
+              "required": [
+                "group"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

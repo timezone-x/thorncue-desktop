@@ -1,0 +1,153 @@
+{
+  "format": "thorncue.show",
+  "format_version": 1,
+  "show": {
+    "name": "Groups",
+    "author": "",
+    "notes": "",
+    "source": null
+  },
+  "groups": [
+    {
+      "id": "act1",
+      "name": "Act 1",
+      "color": "#3e7bd6"
+    },
+    {
+      "id": "storm",
+      "name": "Storm",
+      "color": "#c2449a"
+    }
+  ],
+  "assets": {
+    "t1": {
+      "path": "audio/t1.wav",
+      "sha256": "06cde735c0a83549e3b07d6b2a86310c218c00d576d60cc7ae94fc16b1f41b3d",
+      "bytes": 88278
+    },
+    "t2": {
+      "path": "audio/t2.mp3",
+      "sha256": "dbd82d7223274813e3ef99ffa05b8578ac74c880e56cc8ab7b1ce3b9e6213f21",
+      "bytes": 8482
+    }
+  },
+  "cues": [
+    {
+      "id": "g01",
+      "type": "audio",
+      "name": "Preshow",
+      "asset": "t1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": true,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "g02",
+      "type": "audio",
+      "name": "Act 1 opener",
+      "asset": "t2",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "act1"
+    },
+    {
+      "id": "g03",
+      "type": "silence",
+      "name": "Act 1 pause",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 1.0,
+      "loop": false,
+      "continue": "after_end",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "act1"
+    },
+    {
+      "id": "g04",
+      "type": "audio",
+      "name": "Act 1 closer",
+      "asset": "t1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "act1"
+    },
+    {
+      "id": "g05",
+      "type": "fadeout",
+      "name": "Interval fade",
+      "asset": null,
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 2.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": []
+    },
+    {
+      "id": "g06",
+      "type": "audio",
+      "name": "Thunder",
+      "asset": "t2",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "storm"
+    },
+    {
+      "id": "g07",
+      "type": "audio",
+      "name": "Rain",
+      "asset": "t1",
+      "volume": 1.0,
+      "fade_in": 0.0,
+      "fade_out": 0.0,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": true,
+      "continue": "none",
+      "trim_start": 0.0,
+      "trim_end": null,
+      "cuts": [],
+      "group": "storm"
+    }
+  ]
+}

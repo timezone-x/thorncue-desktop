@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::audio::check_audio_file;
 use crate::error::{Result, TqsError, Warning};
-use crate::manifest::Manifest;
+use crate::manifest::{Kind, Manifest};
 use crate::zipcheck::{self, Budget, Layout};
 use crate::{Limits, MAX_MANIFEST_BYTES};
 
@@ -22,6 +22,9 @@ pub struct Progress {
 ///
 /// Everything is extracted into a temporary folder next to `dest_dir` and only renamed into
 /// place once every check has passed, so a rejected package leaves nothing behind.
+///
+/// Shows only: a `.tqc` or `.tqg` is refused with a message saying what it is. Use
+/// [`read_package_of`] to accept other kinds.
 pub fn read_package(
     path: &Path,
     dest_dir: &Path,
@@ -36,6 +39,17 @@ pub fn read_package_with_progress(
     limits: Limits,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<(Manifest, Vec<Warning>)> {
+    read_package_of(path, dest_dir, limits, &[Kind::Show], on_progress)
+}
+
+/// As [`read_package`], accepting the package kinds in `accept`.
+pub fn read_package_of(
+    path: &Path,
+    dest_dir: &Path,
+    limits: Limits,
+    accept: &[Kind],
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<(Manifest, Vec<Warning>)> {
     let file = File::open(path).map_err(TqsError::io("open", path))?;
     let mut zip = zipcheck::open(BufReader::new(file))?;
     let (entries, mut warnings) = zipcheck::check(&mut zip, &limits, Layout::Package)?;
@@ -44,7 +58,7 @@ pub fn read_package_with_progress(
 
     let Some(minfo) = by_name.get("manifest.json") else {
         return Err(TqsError::invalid(
-            "This file isn't a ThornCue show (it has no manifest.json).",
+            "This file isn't a ThornCue file (it has no manifest.json).",
         ));
     };
     if entries.first().map(|e| e.name.as_str()) != Some("manifest.json") {
@@ -65,7 +79,7 @@ pub fn read_package_with_progress(
     if data.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(TqsError::invalid("manifest.json is too large."));
     }
-    let (manifest, w2) = Manifest::from_slice(&data)?;
+    let (manifest, w2) = Manifest::from_slice_of(&data, accept)?;
     warnings.extend(w2);
 
     // Cross-references (4.3).
