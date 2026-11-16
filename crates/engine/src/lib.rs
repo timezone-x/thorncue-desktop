@@ -7,6 +7,7 @@ mod backend;
 mod core;
 mod edit;
 mod gain;
+mod peaks;
 mod plan;
 mod prep;
 mod state;
@@ -16,6 +17,7 @@ pub use backend::{EngineBackend, TestBackend, TestBackendSettings};
 pub use core::{Command, Core, ManagerFactory, Options};
 pub use edit::kept_segments;
 pub use kira;
+pub use peaks::{PEAK_COLUMNS, Peaks, PeaksReply};
 pub use plan::{CueKind, PlanCue, ShowPlan};
 pub use prep::{Loader, kira_loader};
 pub use state::{

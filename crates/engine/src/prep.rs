@@ -8,6 +8,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use kira::sound::static_sound::StaticSoundData;
 
 use crate::edit::{EditKey, apply};
+use crate::peaks::{self, PeaksReply};
 
 /// Decodes one file. The default uses kira (symphonia); tests swap in a gated one.
 pub type Loader = Arc<dyn Fn(&Path) -> Result<StaticSoundData, String> + Send + Sync>;
@@ -44,8 +45,19 @@ pub(crate) enum PrepMsg {
     },
 }
 
+/// Work for the pool: decode/render (results go back to the engine), or waveform peaks
+/// (results go straight to whoever asked).
+pub(crate) enum Work {
+    Prepare(Job),
+    Peaks {
+        raw: StaticSoundData,
+        columns: usize,
+        reply: PeaksReply,
+    },
+}
+
 pub(crate) struct PrepPool {
-    jobs: Option<Sender<Job>>,
+    jobs: Option<Sender<Work>>,
     pub results: Receiver<PrepMsg>,
     current: Arc<AtomicU64>,
     workers: Vec<std::thread::JoinHandle<()>>,
@@ -53,7 +65,7 @@ pub(crate) struct PrepPool {
 
 impl PrepPool {
     pub fn new(threads: usize, loader: Loader) -> Self {
-        let (job_tx, job_rx) = unbounded::<Job>();
+        let (job_tx, job_rx) = unbounded::<Work>();
         let (res_tx, res_rx) = unbounded::<PrepMsg>();
         let current = Arc::new(AtomicU64::new(0));
         let workers = (0..threads)
@@ -65,7 +77,18 @@ impl PrepPool {
                 std::thread::Builder::new()
                     .name(format!("thorncue-prep-{i}"))
                     .spawn(move || {
-                        for job in job_rx {
+                        for work in job_rx {
+                            let job = match work {
+                                Work::Prepare(job) => job,
+                                Work::Peaks {
+                                    raw,
+                                    columns,
+                                    reply,
+                                } => {
+                                    let _ = reply.send(Ok(peaks::compute(&raw, columns)));
+                                    continue;
+                                }
+                            };
                             // A newer show was loaded since this was queued: skip it.
                             if job.generation != current.load(Ordering::Acquire) {
                                 continue;
@@ -116,7 +139,17 @@ impl PrepPool {
 
     pub fn submit(&self, job: Job) {
         if let Some(tx) = &self.jobs {
-            let _ = tx.send(job);
+            let _ = tx.send(Work::Prepare(job));
+        }
+    }
+
+    pub fn submit_peaks(&self, raw: StaticSoundData, columns: usize, reply: PeaksReply) {
+        if let Some(tx) = &self.jobs {
+            let _ = tx.send(Work::Peaks {
+                raw,
+                columns,
+                reply,
+            });
         }
     }
 }

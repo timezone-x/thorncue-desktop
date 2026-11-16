@@ -5,6 +5,7 @@
   // Hide and height are a per-viewer convenience, remembered in localStorage.
   import type { Cue, CuePatch } from "../lib/api";
   import { syncValue } from "../lib/sync";
+  import Trim from "./Trim.svelte";
 
   let {
     cue,
@@ -77,6 +78,16 @@
   }
 
   const audio = $derived(cue?.type === "audio");
+  let trim = $state<ReturnType<typeof Trim>>();
+
+  /** I, O, X and Ctrl+Z from the Show screen's keyboard handler. */
+  export function trimKey(key: "in" | "out" | "cut" | "undo") {
+    if (hidden || !trim) return;
+    if (key === "in") trim.setIn();
+    else if (key === "out") trim.setOut();
+    else if (key === "cut") trim.cutSelection();
+    else trim.undo();
+  }
 
   // Numbers commit on change (as the web's bindNumber): blank or negative is refused.
   function number(field: "fade_in" | "fade_out" | "pre_wait" | "duration", el: HTMLInputElement, max: number) {
@@ -182,6 +193,9 @@
               Auto-continue to the next cue when this one ends</label>
           </div>
         </div>
+        {#if audio && cue.asset}
+          <Trim bind:this={trim} {cue} {index} {onEdit} />
+        {/if}
       </div>
     {/key}
   {/if}

@@ -236,3 +236,67 @@ pub async fn export_show(id: String, path: String, app: AppHandle) -> Result<(),
     })
     .await
 }
+
+// ---------------------------------------------------------------------------
+// Trim editor (M7): peaks and audition
+// ---------------------------------------------------------------------------
+
+/// The open show's audio file for cue `id`.
+fn cue_audio_path(state: &AppState, id: &str) -> Result<(usize, PathBuf), String> {
+    let g = state.open_show.lock().map_err(|_| busy())?;
+    let s = g.as_ref().ok_or("No show is open.")?;
+    let (index, cue) = s
+        .manifest
+        .cues
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.id == id)
+        .ok_or("That cue is no longer in the show.")?;
+    let asset = cue
+        .asset
+        .as_ref()
+        .and_then(|a| s.manifest.assets.get(a))
+        .ok_or("This cue has no audio file.")?;
+    Ok((index, s.dir.join(&asset.path)))
+}
+
+/// Waveform peaks for cue `id`'s file (the whole file; trims and cuts are drawn over it).
+#[tauri::command]
+pub async fn get_peaks(id: String, app: AppHandle) -> Result<engine::Peaks, String> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let (_, path) = cue_audio_path(&state, &id)?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        state
+            .engine
+            .send(engine::Command::Peaks { path, reply: tx })
+            .map_err(|e| e.to_string())?;
+        // A long file may still be decoding; it answers as soon as it has.
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .map_err(|_| {
+                "The waveform took too long to load. Try selecting the cue again.".to_string()
+            })?
+    })
+    .await
+}
+
+/// Play cue `id` from `from` seconds into its file (the trim editor's "Audition from marker").
+#[tauri::command]
+pub fn audition(id: String, from: f64, state: State<'_, AppState>) -> Result<(), String> {
+    if !from.is_finite() {
+        return Err("That isn't a position in the file.".into());
+    }
+    let (index, _) = cue_audio_path(&state, &id)?;
+    state
+        .engine
+        .send(engine::Command::Audition { index, from })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_audition(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .engine
+        .send(engine::Command::StopAudition)
+        .map_err(|e| e.to_string())
+}
