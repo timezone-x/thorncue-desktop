@@ -61,7 +61,7 @@ pub fn run() {
             std::fs::create_dir_all(&tmp_dir)?;
             tracing::info!("library at {}", library.root().display());
             let open_dir = playback::OpenShowDir::default();
-            let engine = playback::start_engine(app.handle().clone(), open_dir.clone());
+            let engine = playback::start_engine(app.handle().clone(), open_dir.clone(), &settings);
             if let Err(e) = engine.send(engine::Command::SetOptions(settings.engine_options())) {
                 tracing::error!("sending options to the engine: {e}");
             }
@@ -111,6 +111,9 @@ pub fn run() {
             commands::restart_engine,
             commands::set_master,
             commands::set_audio_options,
+            commands::set_outputs,
+            commands::set_audition_volume,
+            commands::refresh_devices,
             web_cmds::web_connection,
             web_cmds::web_connect,
             web_cmds::web_check,

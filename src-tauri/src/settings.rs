@@ -27,6 +27,14 @@ pub struct Settings {
     /// Never sent to the webview: see `for_ui`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_token_fallback: Option<String>,
+    /// Where GO plays (per machine; thorncue-spec#9). Matched by id, then name, on start.
+    #[serde(deserialize_with = "lenient")]
+    pub show_output: engine::ShowOutput,
+    /// Where auditions play. Nothing chosen on a fresh install: auditions are blocked.
+    #[serde(deserialize_with = "lenient")]
+    pub audition_output: engine::AuditionOutput,
+    /// Linear amplitude 0..=1, separate from the master.
+    pub audition_volume: f64,
     /// Fields written by a newer ThornCue are kept on save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -41,12 +49,39 @@ impl Default for Settings {
             stop_fade: 0.0,
             web_server: None,
             web_token_fallback: None,
+            show_output: Default::default(),
+            audition_output: Default::default(),
+            audition_volume: 1.0,
             extra: Default::default(),
         }
     }
 }
 
+/// A field this version can't read (a newer ThornCue's output choice, say) falls back to its
+/// default instead of making the whole file unreadable.
+fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_else(|e| {
+        tracing::warn!("ignoring a setting this version can't read: {e}");
+        T::default()
+    }))
+}
+
 impl Settings {
+    /// What the engine starts with.
+    pub fn output_setup(&self, devices: engine::DeviceList) -> engine::OutputSetup {
+        engine::OutputSetup {
+            show: self.show_output.clone(),
+            audition: self.audition_output.clone(),
+            devices,
+            audition_volume: self.audition_volume,
+        }
+    }
+
     pub fn engine_options(&self) -> engine::Options {
         engine::Options {
             go_lockout_ms: self.go_lockout_ms,
@@ -101,6 +136,10 @@ impl Settings {
             self.stop_fade = 0.0;
         }
         self.stop_fade = self.stop_fade.clamp(0.0, MAX_STOP_FADE);
+        if !self.audition_volume.is_finite() {
+            self.audition_volume = 1.0;
+        }
+        self.audition_volume = self.audition_volume.clamp(0.0, 1.0);
     }
 }
 
@@ -138,6 +177,67 @@ pub fn settings_path(config_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dev(id: &str, name: &str) -> engine::OutputDevice {
+        engine::OutputDevice {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    /// thorncue-spec#9: choices are per machine, and a saved device is found by its name
+    /// when its id has changed (plugged into another USB port).
+    #[test]
+    fn saved_outputs_are_matched_by_name_when_the_id_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        let s = Settings {
+            show_output: engine::ShowOutput::Device(dev("coreaudio:Focusrite-A", "Scarlett 2i2")),
+            audition_output: engine::AuditionOutput::Device(dev(
+                "coreaudio:Phones-A",
+                "Headphones",
+            )),
+            audition_volume: 0.6,
+            ..Settings::default()
+        };
+        s.save(&p).unwrap();
+        let back = Settings::load(&p);
+        assert_eq!(back, s);
+
+        let now = engine::DeviceList {
+            devices: vec![
+                dev("coreaudio:BuiltIn", "MacBook Speakers"),
+                dev("coreaudio:Focusrite-B", "Scarlett 2i2"),
+                dev("coreaudio:Phones-B", "Headphones"),
+            ],
+            default: Some("coreaudio:BuiltIn".into()),
+        };
+        let show = engine::show_route(&back.show_output, &now);
+        assert_eq!(show.device.unwrap().id, "coreaudio:Focusrite-B");
+        assert!(!show.fallback);
+        let show = engine::show_route(&back.show_output, &now);
+        let aud = engine::audition_route(&back.audition_output, &show, &now).unwrap();
+        assert_eq!(aud.device.unwrap().id, "coreaudio:Phones-B");
+    }
+
+    #[test]
+    fn a_fresh_install_has_no_audition_output_and_a_bad_choice_isnt_fatal() {
+        assert_eq!(
+            Settings::default().audition_output,
+            engine::AuditionOutput::NotChosen
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(
+            &p,
+            r#"{"theme_family":"booth","audition_output":{"kind":"bluetooth_magic"},"audition_volume":7}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&p);
+        assert_eq!(s.theme_family, "booth", "the rest of the file still loads");
+        assert_eq!(s.audition_output, engine::AuditionOutput::NotChosen);
+        assert_eq!(s.audition_volume, 1.0);
+    }
 
     #[test]
     fn bad_values_fall_back_and_unknown_fields_survive() {

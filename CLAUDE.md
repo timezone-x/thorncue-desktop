@@ -8,7 +8,7 @@ Read `docs/ARCHITECTURE.md` before changing anything structural. Playback rules 
 
 1. **Rust owns the show.** Audio, timing, standby, auto-continue, files and network live in Rust. The webview only sends intents and draws state. A webview reload must never stop or change playback.
 2. **Never block GO.** Nothing on the GO path waits on disk, network, decoding or the UI. Nothing in an audio callback (`CueGain::process`, anything kira calls) allocates, locks or logs.
-3. **Stop all always wins.** It stops every running cue and cancels every pending start, including cues still waiting on decode.
+3. **Stop all always wins.** It stops every running cue and cancels every pending start, including cues still waiting on decode. (A running audition on the separate audition output is deliberately left alone: `docs/ARCHITECTURE.md` "Stop all and the audition".)
 4. **Never lose a show.** Writes are atomic (temp file, fsync, rename) with a `.bak`. Imports go to a temp folder and only move into the library once fully validated. Deletes go to the OS trash.
 5. **`docs/format/` is shared with the web repo. Don't edit it.** If the spec looks wrong, stop and say so.
 6. `crates/tqs` and `crates/engine` never depend on Tauri.

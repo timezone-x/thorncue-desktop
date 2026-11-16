@@ -14,8 +14,12 @@ use crate::library::{read_local, update_local};
 /// The open show's folder, so standby changes can be saved to its local.json.
 pub type OpenShowDir = Arc<Mutex<Option<PathBuf>>>;
 
-/// Start the engine on the default output and forward its events to the webview.
-pub fn start_engine(app: AppHandle, open_dir: OpenShowDir) -> Engine {
+/// Start the engine on the saved outputs and forward its events to the webview.
+pub fn start_engine(
+    app: AppHandle,
+    open_dir: OpenShowDir,
+    settings: &crate::settings::Settings,
+) -> Engine {
     let (tx, rx) = unbounded::<Event>();
     let standby_tx = start_standby_saver(open_dir);
 
@@ -45,9 +49,30 @@ pub fn start_engine(app: AppHandle, open_dir: OpenShowDir) -> Engine {
         })
         .expect("spawning the event thread");
 
-    Engine::start(engine::cpal_factory(), engine::kira_loader(), move |e| {
-        let _ = tx.send(e);
-    })
+    // One listing at start, so the show opens on its saved device; after that the watcher
+    // lists on its own thread. On macOS, querying devices while audio plays can glitch
+    // (kira issue #38), so it lists only when asked (and a lost audition device is still
+    // caught by its stream error).
+    let devices = engine::list_devices();
+    tracing::info!("output devices: {:?}", devices);
+    let poll = if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(2))
+    };
+    Engine::start(
+        engine::cpal_factory(),
+        engine::EngineOutputs {
+            audition_opener: Some(Box::new(engine::audition_opener())),
+            setup: settings.output_setup(devices),
+            lister: Some(Box::new(engine::list_devices)),
+            poll,
+        },
+        engine::kira_loader(),
+        move |e| {
+            let _ = tx.send(e);
+        },
+    )
 }
 
 /// Writes the latest standby index to the open show's local.json, off every hot path.

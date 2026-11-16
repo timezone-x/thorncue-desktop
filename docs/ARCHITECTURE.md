@@ -100,17 +100,36 @@ Transport, matching FORMAT.md 2.5 and the web's behaviour:
 |---|---|
 | GO | Fire standby, move standby to the next cue. At the end of the list, do nothing and say so. |
 | GO lockout | Optional setting (default 0 ms = off): ignore a GO within N ms of the last. |
-| Stop all | Stop every running cue, cancel every pending start (pre-wait **and** still-decoding), cancel audition. Optional fade (setting, default 0 = instant, as the web). Does not trigger `continue`. |
+| Stop all | Stop every running cue, cancel every pending start (pre-wait **and** still-decoding). Optional fade (setting, default 0 = instant, as the web). Does not trigger `continue`. Leaves a running audition alone: see "Stop all and the audition" below. |
 | Pause / Resume | Freeze everything: sounds, fades, pre-waits, silence/fade-out timers. Pause the parent track(s) and the clock. |
-| Restart audio engine | Drop the AudioManager and build a new one (on the chosen device). Everything stops. Commands during the restart are refused with a clear message. This replaces the web's "Hard stop" and is what you press after an interface is unplugged. |
+| Restart audio engine | Drop the show's AudioManager and build a new one (on the chosen device). Everything on the show output stops; the audition output is separate and isn't touched. Commands during the restart are refused with a clear message. This replaces the web's "Hard stop" and is what you press after an interface is unplugged. |
 | Panic (double Esc within 500 ms) | Stop all with no fade, even if a stop fade is set. |
 
 ### Output devices
 
-- Settings list output devices (cpal host's output devices, by name) with "System default" first. Store the **name**; on start, match by name, fall back to default and warn.
-- kira 0.12 `CpalBackendSettings { device, config }` takes the device and an optional `StreamConfig` (buffer size). Expose buffer size as Auto / 256 / 512 / 1024 frames.
-- Device loss: if the backend reports an error or the device disappears, set engine status to `DeviceLost`, show it loudly in the transport, and offer Restart audio engine.
-- Audition to a second device (headphones) is a later milestone: a second AudioManager on the audition device.
+Two outputs, each its own kira `AudioManager` (thorncue-spec#9): the **show output**, which GO plays on, and the **audition output** (headphones), which the trim editor's Audition from marker plays on. The outputs bar between the header and the transport chooses both, plus an audition volume that is separate from the master. Choices are saved per machine in `settings.json`, never in the show, and a saved device is matched by its id first, then by its name (`engine::outputs`).
+
+**The rule: an audition never plays through the show output unless the operator chose that on purpose.** No silent fallback, ever. Auditions are *blocked*, never rerouted, when:
+
+1. no audition output has been chosen (the default on a fresh install);
+2. the chosen device isn't connected. A running audition stops at once when its device goes, whether its stream reports it or the device watcher notices;
+3. it's the same physical device as the show output, including "System default" resolving to it. If we can't tell, it counts as the same. On Linux, ALSA's `default`/`pulse`/`pipewire` go through the system mixer to a card we can't name, so they count as the same as any card; ALSA aliases of one card (`hw:`, `plughw:`, `front:`, `CARD=`) are one device;
+4. its stream won't open, or fails.
+
+A blocked Audition button still answers a click: it shows the reason and unfolds the bar, and does nothing else. It is dimmed and marked ⊘, with the reason as its tooltip. The only way to audition on the show output is **Same as show output (the audience hears it)**. That choice, or picking the show's own device, asks first in a danger-styled confirm, and the bar keeps a standing warning while it's set. When the show output is changed onto the audition device, a running audition stops and auditions are blocked until the operator picks another device.
+
+How it's built:
+
+- **Show output:** kira's `CpalBackend` on the chosen device (`engine::cpal_factory`). If that device disappears, kira moves the stream to the system default, so the show keeps playing (never block GO). The engine reports Device lost and the bar warns. A saved show device that isn't connected at start also opens on the system default, with a warning.
+- **Audition output:** our own `AuditionBackend` (`backend.rs`), not `CpalBackend`. kira's backend reopens a lost stream on the system default even when it was given a device, which for an audition would be exactly the silent reroute the rule forbids. Ours plays silence once its device fails, and the engine then stops the audition and blocks auditions. The stream lives on its own thread, and the manager is opened off the engine thread (`engine::audition_opener`), so nothing on the GO path waits on it. Until it has opened, the audition state is Opening.
+- **Fades:** auditions go through `CueGain` with an `offset`, so fades and volume sound exactly as they do in playback from that point. The web's auditions ignored fades. Before the in point or after the out point, the file itself plays, at the cue's volume.
+- **Device watcher:** a thread that lists devices with `engine::list_devices` and sends `Command::Devices` when the list changes. It never lists on the engine thread, because ALSA probing can be slow. It polls every 2 s on Windows and Linux. On macOS it lists only on request (the bar's lists are opened, via `refresh_devices`), because querying devices while audio plays can glitch there (kira issue #38). A lost audition device is still caught by its stream error. Every change re-checks rules 1 to 4.
+- **Changing the show output during a show** is allowed, and running cues are **moved**: each carries on from where it was on the new device, after a short gap, with its fades in place. Pre-waits keep their remaining time, silence and fade-out timers keep theirs, and Pause stays as it was. Cues already stopping with a fade are let go. A chosen show device that comes back after a loss isn't reopened by itself: press Restart audio engine, or choose it again.
+- Still to do (rest of M8): buffer size (Auto / 256 / 512 / 1024 frames through `CpalBackendSettings.config`), and device-lost recovery beyond the warning and Restart.
+
+### Stop all and the audition
+
+**Stop all, Esc, double-Esc panic and Restart audio engine leave a running audition alone.** This is deliberate. It is the one exception to "Stop all always wins" (CLAUDE.md rule 3), which is about the show output. The audition is on a different device, and the operator may be previewing the next cue while stopping the show. GO doesn't end it either. It has its own Stop (Stop audition in the trim editor). Loading a different show, or deleting the cue, does end it. Don't "fix" this: `stop_all_panic_go_and_restart_leave_the_audition_alone` in the engine tests holds it in place.
 
 ### Testing the engine
 
@@ -122,7 +141,8 @@ kira has `backend::mock::MockBackend`. Make the engine constructible with any ba
 - `continue: after_end` fires the next cue; stopped cues don't continue; looping cues never do;
 - silence stops all then waits; fade-out fades all over `duration`;
 - GO on a cue still decoding, then Stop all: it never starts (W1);
-- restart engine refuses commands until done.
+- restart engine refuses commands until done;
+- the audition output: rules 1 to 4, Stop all and Restart leaving it alone, and fades matching playback sample for sample (a second `TestBackend` stands in for the headphones).
 
 CI has no sound card: every engine test uses the mock backend.
 

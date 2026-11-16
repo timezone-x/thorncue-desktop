@@ -65,6 +65,51 @@ pub fn set_audio_options(
     Ok(s.for_ui())
 }
 
+fn save_settings(state: &AppState, next: &Settings) -> Result<(), String> {
+    next.save(&state.settings_path).map_err(|e| {
+        tracing::error!("saving settings: {e:#}");
+        "Couldn't save your settings. Check there is free disk space.".to_string()
+    })
+}
+
+/// Show and audition outputs (thorncue-spec#9). The webview asks the operator first before
+/// sending anything that makes auditions play through the show output; the engine applies the
+/// blocking rules either way.
+#[tauri::command]
+pub fn set_outputs(
+    show: engine::ShowOutput,
+    audition: engine::AuditionOutput,
+    state: State<'_, AppState>,
+) -> Result<Settings, String> {
+    let mut s = state.settings.lock().map_err(|_| busy())?;
+    let mut next = s.clone();
+    next.show_output = show.clone();
+    next.audition_output = audition.clone();
+    save_settings(&state, &next)?;
+    *s = next;
+    tracing::info!("outputs: show {show:?}, audition {audition:?}");
+    send(&state, Command::SetOutputs { show, audition })?;
+    Ok(s.for_ui())
+}
+
+/// Audition volume (0..=1), separate from the master. Saved per machine.
+#[tauri::command]
+pub fn set_audition_volume(volume: f64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut s = state.settings.lock().map_err(|_| busy())?;
+    let mut next = s.clone();
+    next.audition_volume = volume;
+    let next = next.sanitised();
+    save_settings(&state, &next)?;
+    *s = next;
+    send(&state, Command::SetAuditionVolume(s.audition_volume))
+}
+
+/// List the output devices again (the outputs bar opened its device lists).
+#[tauri::command]
+pub fn refresh_devices(state: State<'_, AppState>) {
+    state.engine.refresh_devices();
+}
+
 /// The page calls this once it has painted, so the window never shows unstyled.
 #[tauri::command]
 pub fn app_ready(app: AppHandle) {

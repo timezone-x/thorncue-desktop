@@ -16,6 +16,7 @@
   import { MIN_LEN, clamp, keptSegments, mergeCuts, outPoint, r4, segmentsLength, type EditFields } from "../lib/edits";
   import { fmtTime } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
+  import { auditionBlocked, checkAudition } from "../lib/outputs.svelte";
 
   let { cue, index, onEdit }: { cue: Cue; index: number; onEdit: (id: string, patch: CuePatch) => void } = $props();
 
@@ -249,7 +250,10 @@
 
   // ---- Audition ----
 
+  const blockedWhy = $derived(auditionBlocked());
+
   async function toggleAudition() {
+    if (!auditioning && !checkAudition()) return;
     try {
       if (auditioning) await trimApi.stopAudition();
       else await trimApi.audition(cue.id, marker ?? edits.trim_start);
@@ -336,8 +340,9 @@
     {#if sel}<span>Selected <b>{fmtTime(sel[0], true)} to {fmtTime(sel[1], true)}</b></span>{/if}
   </p>
   <div class="trim__buttons">
-    <button type="button" class="btn" aria-pressed={auditioning} disabled={!peaks} onclick={toggleAudition}>
-      {auditioning ? "Stop audition" : "Audition from marker"}
+    <button type="button" class="btn" class:is-blocked={!auditioning && blockedWhy} aria-pressed={auditioning}
+      disabled={!peaks} title={!auditioning && blockedWhy ? blockedWhy : undefined} onclick={toggleAudition}>
+      {#if !auditioning && blockedWhy}<span aria-hidden="true">⊘ </span>{/if}{auditioning ? "Stop audition" : "Audition from marker"}
     </button>
     <button type="button" class="btn" aria-keyshortcuts="I" disabled={!peaks} onclick={setIn}>Set in</button>
     <button type="button" class="btn" aria-keyshortcuts="O" disabled={!peaks} onclick={setOut}>Set out</button>
@@ -353,5 +358,5 @@
       {/each}
     </ul>
   {/if}
-  <p class="trim__note">The audio file is never changed. Restore full file undoes every trim and cut. Audition plays through the show output, so it's off while cues are running.</p>
+  <p class="trim__note">The audio file is never changed. Restore full file undoes every trim and cut. Audition plays on the audition output (headphones), never the show output unless you chose that, and keeps playing through Stop all: use Stop audition.</p>
 </div>

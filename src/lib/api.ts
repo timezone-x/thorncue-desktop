@@ -123,6 +123,38 @@ export interface EngineSnapshot {
   prep_total: number;
   decoded_bytes: number;
   master: number;
+  outputs: OutputsState;
+}
+
+// ---- Outputs (crates/engine/src/outputs.rs, thorncue-spec#9) ----
+
+export interface OutputDevice {
+  id: string;
+  name: string;
+}
+
+export type ShowOutput = { kind: "system_default" } | ({ kind: "device" } & OutputDevice);
+export type AuditionOutput = { kind: "not_chosen" } | { kind: "same_as_show" } | ({ kind: "device" } & OutputDevice);
+
+export type AuditionBlock =
+  | { kind: "not_chosen" }
+  | { kind: "missing"; detail: string }
+  | { kind: "same_device"; detail: string }
+  | { kind: "failed"; detail: string };
+
+export type AuditionState =
+  | { state: "ready"; name: string; through_show: boolean }
+  | { state: "opening"; name: string }
+  | { state: "blocked"; reason: AuditionBlock; message: string };
+
+export interface OutputsState {
+  show_choice: ShowOutput;
+  audition_choice: AuditionOutput;
+  show: { device: OutputDevice | null; name: string; fallback: boolean };
+  audition: AuditionState;
+  audition_volume: number;
+  devices: OutputDevice[];
+  default_device: string | null;
 }
 
 export interface Position {
@@ -153,6 +185,9 @@ export const transport = {
   jump: (number: number) => invoke<void>("jump", { number }),
   restart: () => invoke<void>("restart_engine"),
   setMaster: (volume: number) => invoke<void>("set_master", { volume }),
+  setOutputs: (show: ShowOutput, audition: AuditionOutput) => invoke<Settings>("set_outputs", { show, audition }),
+  setAuditionVolume: (volume: number) => invoke<void>("set_audition_volume", { volume }),
+  refreshDevices: () => invoke<void>("refresh_devices"),
 };
 
 // ---- ThornCue Web (src-tauri/src/web_cmds.rs) ----
