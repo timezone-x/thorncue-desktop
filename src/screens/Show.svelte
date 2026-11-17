@@ -2,7 +2,7 @@
   // The Show screen (reference/web/show.html): header, transport, now-playing strip, cue table.
   // Everything that plays is decided in Rust; this screen sends intents and draws the engine's
   // snapshot. It never moves focus when state changes.
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
@@ -14,8 +14,11 @@
     type CuePatch,
     type CuePrep,
     type EditResult,
+    type Group,
     type ShowView,
   } from "../lib/api";
+  import { GROUP_COLORS, safeColor } from "../lib/groups";
+  import GroupDialog from "../components/GroupDialog.svelte";
   import { act, engine, startEngineMirror } from "../lib/engine.svelte";
   import { fmtBytes, fmtTime, plural, rowNotes } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
@@ -61,6 +64,163 @@
   let confirmDelete = $state<{ cue: Cue; index: number } | null>(null);
   let inspector = $state<ReturnType<typeof Inspector>>();
   let inspectorHidden = $state(false);
+
+  // ---- Groups (thorncue-spec#2; web static/app.js "Groups") ----
+  // Rust owns membership and order; collapse is per machine (local.json); played counts are
+  // this screen's, since the show opened or Back to top (as the web: per page load).
+
+  const groups = $derived(show.groups ?? []);
+  const groupById = $derived(new Map(groups.map((g) => [g.id, g])));
+  const collapsed = $derived(new Set(show.local.collapsed_groups ?? []));
+  const cueById = (id: string) => cues.find((c) => c.id === id);
+  const cueIndex = (id: string) => cues.findIndex((c) => c.id === id);
+  const membersOf = (gid: string) => cues.filter((c) => c.group === gid);
+
+  type Block = { kind: "loose"; rows: number[] } | { kind: "group"; group: Group; rows: number[] };
+  const blocks = $derived.by(() => {
+    const out: Block[] = [];
+    cues.forEach((c, i) => {
+      const g = c.group ? groupById.get(c.group) : undefined;
+      const last = out[out.length - 1];
+      if (!g) {
+        if (last?.kind === "loose") last.rows.push(i);
+        else out.push({ kind: "loose", rows: [i] });
+      } else if (last?.kind === "group" && last.group.id === g.id) last.rows.push(i);
+      else out.push({ kind: "group", group: g, rows: [i] });
+    });
+    return out;
+  });
+
+  let played = $state(new Set<string>());
+  $effect(() => {
+    const running = snap?.running ?? [];
+    untrack(() => {
+      if (running.every((r) => played.has(r.id))) return;
+      const next = new Set(played);
+      for (const r of running) next.add(r.id);
+      played = next;
+    });
+  });
+
+  // Shift-click selects a range from the inspected (or standby) cue, as the web's selectRange.
+  let selection = $state<string[]>([]);
+  const selected = $derived(new Set(selection.filter((id) => cues.some((c) => c.id === id))));
+
+  // Another show opened in this screen (Duplicate show): start its counts and selection afresh.
+  let shownId = untrack(() => show.id);
+  $effect(() => {
+    if (show.id === shownId) return;
+    shownId = show.id;
+    played = new Set();
+    selection = [];
+  });
+
+  function groupSummary(g: Group, rows: number[]): string {
+    const n = rows.length;
+    const runningRows = rows.filter((i) => runningByIndex.has(i));
+    const playedN = rows.filter((i) => played.has(cues[i].id)).length;
+    const parts: string[] = [];
+    if (runningRows.length) {
+      // The most recently started cue in the group, as the now-playing strip.
+      const started = engine.positions.filter((p) => !p.audition && rows.includes(p.index));
+      const i = started[started.length - 1]?.index ?? runningRows[runningRows.length - 1];
+      parts.push(`Playing Q${i + 1}`);
+    } else if (rows.includes(standby) && collapsed.has(g.id)) {
+      parts.push(`Standby Q${standby + 1}`);
+    }
+    parts.push(playedN || runningRows.length ? `${playedN} of ${n} played` : plural(n, "cue"));
+    return parts.join(" · ");
+  }
+
+  async function toggleGroup(id: string) {
+    try {
+      const list = await editApi.setGroupCollapsed(id, !collapsed.has(id));
+      onChanged({ ...show, local: { ...show.local, collapsed_groups: list } });
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
+  function selectRange(to: number) {
+    const fromId = inspectedId ?? cues[standby]?.id ?? cues[to]?.id;
+    const from = fromId ? cueIndex(fromId) : to;
+    const [a, b] = from <= to ? [from, to] : [to, from];
+    selection = cues.slice(a, b + 1).map((c) => c.id);
+  }
+
+  function onRowClick(e: MouseEvent, i: number) {
+    if (e.shiftKey) {
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      selectRange(i);
+      return;
+    }
+    selection = [];
+    selectRow(i);
+  }
+
+  type GroupDialogState =
+    | { mode: "new"; ids: string[]; name: string; color: string; hint: string }
+    | { mode: "edit"; group: Group; hint: string };
+  let groupDialog = $state<GroupDialogState | null>(null);
+
+  /** Grouping the middle of a group would split it in two (web `splitsAGroup`); Rust refuses it too. */
+  function splitsAGroup(ids: string[]): Group | null {
+    const idx = ids.map(cueIndex).sort((a, b) => a - b);
+    const [lo, hi] = [idx[0], idx[idx.length - 1]];
+    for (const g of groups) {
+      const m = membersOf(g.id).map((c) => cueIndex(c.id));
+      if (m.length && m[0] < lo && hi < m[m.length - 1]) return g;
+    }
+    return null;
+  }
+
+  function openGroupDialog(group?: Group) {
+    if (group) {
+      const n = membersOf(group.id).length;
+      groupDialog = { mode: "edit", group, hint: `${plural(n, "cue")}. Drag the group's title bar to move them all.` };
+      return;
+    }
+    const ids = selected.size ? cues.filter((c) => selected.has(c.id)).map((c) => c.id) : inspected ? [inspected.id] : [];
+    if (!ids.length) {
+      showToast("Select a cue first. Shift-click another cue to select a range.", true);
+      return;
+    }
+    const split = splitsAGroup(ids);
+    if (split) {
+      showToast(`Those cues are in the middle of "${split.name}". Select from its start or end, or ungroup it first.`, true);
+      return;
+    }
+    const used = new Set(groups.map((g) => g.color));
+    const color = (GROUP_COLORS.find(([, hex]) => !used.has(hex)) ?? GROUP_COLORS[groups.length % GROUP_COLORS.length])[1];
+    let n = groups.length + 1;
+    while (groups.some((g) => g.name === `Group ${n}`)) n++;
+    const first = cueIndex(ids[0]) + 1;
+    const last = cueIndex(ids[ids.length - 1]) + 1;
+    const hint =
+      ids.length === 1
+        ? `Groups Q${first}. Drag more cues into the group, or shift-click to select a range first.`
+        : `Groups Q${first} to Q${last} (${ids.length} cues).`;
+    groupDialog = { mode: "new", ids, name: `Group ${n}`, color, hint };
+  }
+
+  async function saveGroup(name: string, color: string) {
+    const d = groupDialog;
+    groupDialog = null;
+    if (!d) return;
+    if (d.mode === "new") {
+      await edit(() => editApi.createGroup(d.ids, name, color));
+      selection = [];
+    } else {
+      await edit(() => editApi.editGroup(d.group.id, name, color));
+    }
+  }
+
+  async function ungroup(g: Group) {
+    groupDialog = null;
+    await edit(() => editApi.ungroup(g.id));
+    showToast(`Ungrouped ${g.name}. The cues are still in the list.`);
+  }
 
   onMount(() => {
     void startEngineMirror();
@@ -159,34 +319,103 @@
     }
   }
 
-  // Drag a row by its grip to reorder (pointer events: HTML5 drag-and-drop is unavailable in
-  // the webview on Windows while native file drops are on).
-  let dragFrom = $state<number | null>(null);
-  let dropAt = $state<number | null>(null);
-  function startDrag(e: PointerEvent, i: number) {
+  // ---- Dragging (web app.js "Dragging", on pointer events: HTML5 drag-and-drop is unavailable
+  // in the webview on Windows while native file drops are on). A cue by its grip; a whole group
+  // by its title bar. Drop on the top or bottom half of a row to land before or after it; a cue
+  // joins the group of the row it lands next to. On a group's title bar: top half = just above
+  // the group, ungrouped; bottom half = first cue in the group. Empty space below = the end.
+
+  type Drag = { kind: "cue" | "group"; id: string };
+  type Target = { end: true } | { cue: string; after: boolean } | { group: string; after: boolean };
+  type Plan = { ids: string[]; anchor: string; after: boolean; group?: string | null };
+  type Mark = { type: "row" | "group"; id: string; after: boolean } | { type: "head"; id: string; after?: undefined };
+  let drag = $state<Drag | null>(null);
+  let mark = $state<Mark | null>(null);
+
+  function dropTarget(x: number, y: number): Target | null {
+    const el = document.elementFromPoint(x, y);
+    if (!el || !listWrap.contains(el) || el.closest(".cue-table--head")) return null;
+    const tr = el.closest<HTMLElement>("tr[data-id]");
+    const head = tr ? null : el.closest<HTMLElement>(".cue-group__head");
+    if (tr) {
+      const r = tr.getBoundingClientRect();
+      return { cue: tr.dataset.id!, after: y > r.top + r.height / 2 };
+    }
+    if (head) {
+      const r = head.getBoundingClientRect();
+      return { group: head.closest<HTMLElement>(".cue-group")!.dataset.group!, after: y > r.top + r.height / 2 };
+    }
+    return el.closest(".cue-group") ? null : { end: true };
+  }
+
+  function planDrop(d: Drag, t: Target): Plan | null {
+    const last = cues[cues.length - 1];
+    if (!last) return null;
+    if (d.kind === "cue") {
+      const c = cueById(d.id);
+      if (!c) return null;
+      if ("end" in t) return { ids: [c.id], anchor: last.id, after: true, group: null };
+      if ("cue" in t) {
+        if (t.cue === c.id) return null;
+        return { ids: [c.id], anchor: t.cue, after: t.after, group: cueById(t.cue)?.group ?? null };
+      }
+      const first = membersOf(t.group).find((x) => x.id !== c.id);
+      if (!first) return t.after ? null : { ids: [c.id], anchor: c.id, after: false, group: null };
+      return { ids: [c.id], anchor: first.id, after: false, group: t.after ? t.group : null };
+    }
+    const ids = membersOf(d.id).map((c) => c.id);
+    if (!ids.length) return null;
+    if ("end" in t) return { ids, anchor: last.id, after: true };
+    const gid = "cue" in t ? (cueById(t.cue)?.group ?? null) : t.group;
+    if (gid === d.id) return null;
+    if (!gid) return "cue" in t ? { ids, anchor: t.cue, after: t.after } : null;
+    const m = membersOf(gid);
+    if ("group" in t) return { ids, anchor: m[0].id, after: false };
+    return t.after ? { ids, anchor: m[m.length - 1].id, after: true } : { ids, anchor: m[0].id, after: false };
+  }
+
+  /** Where the drop will land: beside a row, or beside a whole group when the moved cues end up
+   * outside it (or it is collapsed), as the web's markDrop. */
+  function markFor(d: Drag, p: Plan | null): Mark | null {
+    if (!p) return null;
+    const ag = cueById(p.anchor)?.group ?? null;
+    if (ag && (d.kind === "group" || p.group !== ag)) return { type: "group", id: ag, after: p.after };
+    if (ag && collapsed.has(ag)) return { type: "head", id: ag };
+    return { type: "row", id: p.anchor, after: p.after };
+  }
+
+  function startDrag(e: PointerEvent, d: Drag) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
     e.stopPropagation();
     const grip = e.currentTarget as HTMLElement;
     grip.setPointerCapture(e.pointerId);
-    dragFrom = i;
-    dropAt = i;
+    const [x0, y0] = [e.clientX, e.clientY];
+    let plan: Plan | null = null;
     const move = (ev: PointerEvent) => {
-      const row = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("tr[data-index]");
-      if (row) dropAt = Number(row.dataset.index);
+      if (!drag && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+      if (!drag) {
+        drag = d;
+        selection = [];
+      }
+      const t = dropTarget(ev.clientX, ev.clientY);
+      plan = t ? planDrop(d, t) : null;
+      mark = markFor(d, plan);
     };
-    const up = () => {
+    const finish = (commit: boolean) => {
       grip.removeEventListener("pointermove", move);
-      grip.removeEventListener("pointerup", up);
-      grip.removeEventListener("pointercancel", up);
-      const from = dragFrom;
-      const to = dropAt;
-      dragFrom = null;
-      dropAt = null;
-      if (from !== null && to !== null && from !== to) void edit(() => editApi.moveCue(cues[from].id, to));
+      grip.removeEventListener("pointerup", onUp);
+      grip.removeEventListener("pointercancel", onCancel);
+      const p = commit && drag ? plan : null;
+      drag = null;
+      mark = null;
+      if (p) void edit(() => editApi.moveCues(p.ids, p.anchor, p.after, d.kind === "cue" ? p.group : undefined));
     };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
     grip.addEventListener("pointermove", move);
-    grip.addEventListener("pointerup", up);
-    grip.addEventListener("pointercancel", up);
+    grip.addEventListener("pointerup", onUp);
+    grip.addEventListener("pointercancel", onCancel);
   }
 
   // Sent on every keystroke, like cue names: Rust debounces the save, not the UI.
@@ -212,7 +441,10 @@
   $effect(() => {
     const i = standby;
     void tick().then(() => {
-      listWrap?.querySelector<HTMLElement>(`tr[data-index="${i}"]`)?.scrollIntoView({ block: "nearest" });
+      // In a collapsed group the row isn't drawn: bring its title bar into view instead.
+      const row = listWrap?.querySelector<HTMLElement>(`tr[data-index="${i}"]`);
+      const target = row?.offsetParent ? row : row?.closest(".cue-group")?.querySelector<HTMLElement>(".cue-group__head");
+      target?.scrollIntoView({ block: "nearest" });
     });
   });
 
@@ -314,7 +546,10 @@
     void act(() => transport.stopAll(panic));
   }
   const togglePause = () => act(transport.togglePause);
-  const backToTop = () => act(() => transport.setStandby(0));
+  const backToTop = () => {
+    played = new Set();
+    return act(() => transport.setStandby(0));
+  };
   const restart = () => act(transport.restart);
   // The slider sends every move; the engine ramps 20 ms per change so it never clicks.
   const setMaster = (v: number) => act(() => transport.setMaster(v));
@@ -392,6 +627,11 @@
         break;
       case "\\":
         inspector?.toggle();
+        break;
+      case "g":
+      case "G":
+        e.preventDefault();
+        openGroupDialog();
         break;
       case "i":
       case "I":
@@ -481,12 +721,36 @@
     <button type="button" class="btn btn--primary" disabled={adding} onclick={pickAudio}>{adding ? "Adding…" : "Add cue"}</button>
     <button type="button" class="btn" onclick={() => edit(() => editApi.addControlCue(true))}>Add silence</button>
     <button type="button" class="btn" onclick={() => edit(() => editApi.addControlCue(false))}>Add fade-out</button>
+    <button type="button" class="btn" aria-keyshortcuts="G" title="Put the selected cues in a group (G). Shift-click a cue to select a range."
+      onclick={() => openGroupDialog()}>Group</button>
+    <span class="cue-toolbar__selected" aria-live="polite">{selected.size > 1 ? `${selected.size} selected` : ""}</span>
     <span class="cue-toolbar__count num">{plural(cues.length, "cue")}</span>
   </div>
 
+  {#snippet row(i: number)}
+    {@const c = cues[i]}
+    {@const notes = rowNotes(c)}
+    {@const st = rowState(i)}
+    <tr class="cue-row" data-index={i} data-id={c.id} class:is-standby={i === standby} class:is-running={st.running}
+      class:is-inspected={i === inspectedIndex} class:is-selected={selected.has(c.id)}
+      class:is-dragging={drag?.kind === "cue" && drag.id === c.id}
+      class:is-drop-before={mark?.type === "row" && mark.id === c.id && !mark.after}
+      class:is-drop-after={mark?.type === "row" && mark.id === c.id && mark.after}
+      onclick={(e) => onRowClick(e, i)}>
+      <td class="c-grip" title="Drag to reorder" aria-hidden="true" onpointerdown={(e) => startDrag(e, { kind: "cue", id: c.id })}
+        onclick={(e) => e.stopPropagation()}>⠿</td>
+      <td class="c-q num">{i + 1}</td>
+      <td class="c-name" title={c.name}>{c.name}</td>
+      <td class="c-dur num">{lengthText(i)}</td>
+      <td class="c-vol num">{c.type === "audio" ? `${Math.round(c.volume * 100)}%` : ""}</td>
+      <td class="c-notes" title={notes}>{notes}</td>
+      <td class="c-state" class:is-missing={st.missing} class:muted={st.text === "Ready" || st.text === "Loading"} title={st.title}>{st.text}</td>
+    </tr>
+  {/snippet}
+
   <main class="cue-list-wrap" bind:this={listWrap}>
     {#if cues.length}
-      <table class="cue-table">
+      <table class="cue-table cue-table--head">
         <thead>
           <tr>
             <th class="c-grip" scope="col"><span class="sr-only">Reorder</span></th>
@@ -498,26 +762,40 @@
             <th class="c-state" scope="col">State</th>
           </tr>
         </thead>
-        <tbody>
-          {#each cues as c, i (c.id)}
-            {@const notes = rowNotes(c)}
-            {@const st = rowState(i)}
-            <tr class="cue-row" data-index={i} class:is-standby={i === standby} class:is-running={st.running}
-              class:is-inspected={i === inspectedIndex} class:is-dragging={dragFrom === i}
-              class:is-drop-target={dropAt === i && dragFrom !== null && dragFrom !== i}
-              onclick={() => selectRow(i)}>
-              <td class="c-grip" title="Drag to reorder" aria-hidden="true" onpointerdown={(e) => startDrag(e, i)}
-                onclick={(e) => e.stopPropagation()}>⠿</td>
-              <td class="c-q num">{i + 1}</td>
-              <td class="c-name" title={c.name}>{c.name}</td>
-              <td class="c-dur num">{lengthText(i)}</td>
-              <td class="c-vol num">{c.type === "audio" ? `${Math.round(c.volume * 100)}%` : ""}</td>
-              <td class="c-notes" title={notes}>{notes}</td>
-              <td class="c-state" class:is-missing={st.missing} class:muted={st.text === "Ready" || st.text === "Loading"} title={st.title}>{st.text}</td>
-            </tr>
-          {/each}
-        </tbody>
       </table>
+      <div class="cue-list">
+        {#each blocks as b (b.kind === "group" ? `g:${b.group.id}` : `l:${cues[b.rows[0]].id}`)}
+          {#if b.kind === "loose"}
+            <table class="cue-table"><tbody>{#each b.rows as i (cues[i].id)}{@render row(i)}{/each}</tbody></table>
+          {:else}
+            {@const g = b.group}
+            {@const isCol = collapsed.has(g.id)}
+            <section class="cue-group" data-group={g.id} aria-label={`Group: ${g.name}`} style:--group-color={safeColor(g.color)}
+              class:is-collapsed={isCol} class:is-running={b.rows.some((i) => runningByIndex.has(i))}
+              class:is-standby={isCol && b.rows.includes(standby)}
+              class:is-dragging={drag?.kind === "group" && drag.id === g.id}
+              class:is-drop-before={mark?.type === "group" && mark.id === g.id && !mark.after}
+              class:is-drop-after={mark?.type === "group" && mark.id === g.id && mark.after}>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="cue-group__head" class:is-drop-after={mark?.type === "head" && mark.id === g.id}
+                title="Drag the title bar to move the whole group" onpointerdown={(e) => startDrag(e, { kind: "group", id: g.id })}>
+                <button type="button" class="cue-group__toggle" aria-expanded={!isCol} title={isCol ? "Expand group" : "Collapse group"}
+                  onclick={() => toggleGroup(g.id)}>
+                  <span class="cue-group__chev" aria-hidden="true"></span>
+                  <span class="cue-group__name">{g.name}</span>
+                </button>
+                <span class="cue-group__fill" aria-hidden="true"></span>
+                <span class="cue-group__summary num">{groupSummary(g, b.rows)}</span>
+                <button type="button" class="cue-group__edit" title={`Rename, recolour or ungroup ${g.name}`}
+                  onclick={() => openGroupDialog(g)}>Edit</button>
+              </div>
+              <div class="cue-group__body" hidden={isCol}>
+                <table class="cue-table"><tbody>{#each b.rows as i (cues[i].id)}{@render row(i)}{/each}</tbody></table>
+              </div>
+            </section>
+          {/if}
+        {/each}
+      </div>
     {:else}
       <div class="cue-list-empty">
         <p>This show has no cues.</p>
@@ -527,10 +805,22 @@
     {/if}
   </main>
 
-  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} onEdit={updateCue}
+  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
+    onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
+
+{#if groupDialog}
+  {@const d = groupDialog}
+  {#if d.mode === "new"}
+    <GroupDialog mode="new" initialName={d.name} initialColor={d.color} hint={d.hint} onSave={saveGroup}
+      onCancel={() => (groupDialog = null)} />
+  {:else}
+    <GroupDialog mode="edit" initialName={d.group.name} initialColor={d.group.color} hint={d.hint} onSave={saveGroup}
+      onUngroup={() => ungroup(d.group)} onCancel={() => (groupDialog = null)} />
+  {/if}
+{/if}
 
 {#if confirmDelete}
   {@const d = confirmDelete}
@@ -559,6 +849,7 @@
         <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move standby up or down</td></tr>
         <tr><td><kbd>J</kbd></td><td>Jump to a cue number and play it</td></tr>
         <tr><td><kbd>&#92;</kbd></td><td>Show or hide the inspector</td></tr>
+        <tr><td><kbd>G</kbd></td><td>Group the selected cues (shift-click a cue to select a range)</td></tr>
         <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Set the in or out point at the marker (or the audition playhead)</td></tr>
         <tr><td><kbd>X</kbd></td><td>Cut the selected section</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>Undo the last trim or cut</td></tr>

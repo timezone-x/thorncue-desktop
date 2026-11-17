@@ -93,6 +93,7 @@ None. It's a work tool.
 | Dark page by default | Booth console genre: screen light spills onto the stage. Light variants exist for desk prep in daylight; the operator chooses. |
 | System font as the only voice | Native operator tool; no web font download at the venue. |
 | ▶ glyph in the Q column | Marks the standby cue (the playhead), like playback software does. It carries meaning, not decoration. |
+| User-chosen colours on cue groups | Groups are the operator's own labels ("Act 1", "Storm"), and colour is how people tell panels apart at a glance, as in btop. Kept to a 1px rounded outline with the name on its top edge: no fills, no stripes, no coloured text, so GO green, Stop red and the select colour keep their meaning. Status inside a group is still words ("Playing Q4", "3 of 8 played"). Presets are mid-tones that read on dark and light themes. |
 
 ## Refused defaults
 - Near-black + gold accent (previous version). Wave 2 "dark + one accent", and the gold was justified as "spotlight gel", which is a pun on the subject, not a convention.

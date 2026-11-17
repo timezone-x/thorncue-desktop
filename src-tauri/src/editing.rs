@@ -70,6 +70,97 @@ pub enum Edit {
         id: String,
     },
     ShowName(String),
+    /// Put cues in a new group (thorncue-spec#2, web `openGroupDialog` / group form): they are
+    /// pulled together at the first one's place. Refused if they sit in the middle of another
+    /// group, which would split it.
+    CreateGroup {
+        ids: Vec<String>,
+        name: String,
+        color: String,
+    },
+    /// Rename or recolour a group.
+    EditGroup {
+        id: String,
+        name: String,
+        color: String,
+    },
+    /// Remove a group; its cues stay where they are, ungrouped.
+    Ungroup {
+        id: String,
+    },
+    /// Move cues (kept in their order) to just before or after `anchor` (web `moveCues`).
+    /// `group`: `None` leaves membership alone (dragging a whole group); `Some(g)` sets it on
+    /// every moved cue (dragging a cue: it joins the group of the row it lands next to).
+    MoveCues {
+        ids: Vec<String>,
+        anchor: String,
+        after: bool,
+        group: Option<Option<String>>,
+    },
+    /// The inspector's Group field (web `f-group`): joining a group puts the cue at its end;
+    /// leaving keeps the cue in place if it was the group's first, else it goes just below.
+    SetGroup {
+        id: String,
+        group: Option<String>,
+    },
+}
+
+/// Most a group name may be (FORMAT.md 2.7).
+pub const GROUP_NAME_MAX: usize = 60;
+
+fn group_fields(name: &str, color: &str) -> Result<(String, String), String> {
+    let name: String = name.trim().chars().take(GROUP_NAME_MAX).collect();
+    if name.is_empty() {
+        return Err("Give the group a name.".into());
+    }
+    let color = color.trim().to_lowercase();
+    let ok = color.len() == 7
+        && color.starts_with('#')
+        && color[1..].bytes().all(|b| b.is_ascii_hexdigit());
+    if !ok {
+        return Err("Choose a colour for the group.".into());
+    }
+    Ok((name, color))
+}
+
+fn members(cues: &[Value], group: &str) -> Vec<usize> {
+    (0..cues.len())
+        .filter(|&i| group_of(cues.get(i)) == Some(group))
+        .collect()
+}
+
+/// Move `ids` (in list order) so they sit before or after `anchor`, as the web's `moveCues`.
+fn move_block(
+    cues: &mut Vec<Value>,
+    ids: &[String],
+    anchor: &str,
+    after: bool,
+) -> Result<(), String> {
+    let at = cue_index(cues, anchor)? + usize::from(after);
+    for id in ids {
+        cue_index(cues, id)?;
+    }
+    let moving = |c: &Value| {
+        c["id"]
+            .as_str()
+            .is_some_and(|id| ids.iter().any(|x| x == id))
+    };
+    let shift = cues[..at].iter().filter(|c| moving(c)).count();
+    let (block, mut rest): (Vec<Value>, Vec<Value>) = cues.drain(..).partition(|c| moving(c));
+    let tail = rest.split_off(at - shift);
+    rest.extend(block);
+    rest.extend(tail);
+    *cues = rest;
+    Ok(())
+}
+
+fn set_group(cue: &mut Value, group: Option<&str>) {
+    match group {
+        Some(g) => cue["group"] = json!(g),
+        None => {
+            cue.as_object_mut().expect("cue").remove("group");
+        }
+    }
 }
 
 pub fn new_id() -> String {
@@ -216,6 +307,149 @@ pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String
             }
             Edit::ShowName(name) => {
                 obj["show"]["name"] = json!(name);
+            }
+            Edit::CreateGroup { ids, name, color } => {
+                let (name, color) = group_fields(&name, &color)?;
+                let groups = obj
+                    .get("groups")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let cues = obj["cues"].as_array_mut().expect("cues");
+                let mut idx = ids
+                    .iter()
+                    .map(|id| cue_index(cues, id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                idx.sort_unstable();
+                idx.dedup();
+                let (Some(&lo), Some(&hi)) = (idx.first(), idx.last()) else {
+                    return Err(
+                        "Select a cue first. Shift-click another cue to select a range.".into(),
+                    );
+                };
+                // Grouping the middle of a group would split it in two (web `splitsAGroup`).
+                for g in &groups {
+                    let gid = g["id"].as_str().unwrap_or_default();
+                    let m = members(cues, gid);
+                    if let (Some(&gs), Some(&ge)) = (m.first(), m.last())
+                        && gs < lo
+                        && hi < ge
+                    {
+                        return Err(format!(
+                            "Those cues are in the middle of \"{}\". Select from its start or end, or ungroup it first.",
+                            g["name"].as_str().unwrap_or("a group")
+                        ));
+                    }
+                }
+                let ordered: Vec<String> = idx
+                    .iter()
+                    .map(|&i| cues[i]["id"].as_str().unwrap_or_default().to_string())
+                    .collect();
+                move_block(cues, &ordered, &ordered[0], false)?;
+                let gid = format!("g{}", &new_id()[..10]);
+                for c in cues.iter_mut() {
+                    if c["id"]
+                        .as_str()
+                        .is_some_and(|id| ordered.iter().any(|x| x == id))
+                    {
+                        set_group(c, Some(&gid));
+                    }
+                }
+                let groups = obj
+                    .entry("groups")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or("This show's groups are damaged.")?;
+                groups.push(json!({"id": gid, "name": name, "color": color}));
+                focus = ordered.first().cloned();
+            }
+            Edit::EditGroup { id, name, color } => {
+                let (name, color) = group_fields(&name, &color)?;
+                let g = obj
+                    .get_mut("groups")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|gs| gs.iter_mut().find(|g| g["id"] == json!(id)))
+                    .ok_or("That group is no longer in the show.")?;
+                g["name"] = json!(name);
+                g["color"] = json!(color);
+            }
+            Edit::Ungroup { id } => {
+                let gs = obj
+                    .get_mut("groups")
+                    .and_then(Value::as_array_mut)
+                    .ok_or("That group is no longer in the show.")?;
+                let before = gs.len();
+                gs.retain(|g| g["id"] != json!(id));
+                if gs.len() == before {
+                    return Err("That group is no longer in the show.".into());
+                }
+                for c in obj["cues"].as_array_mut().expect("cues") {
+                    if group_of(Some(c)) == Some(id.as_str()) {
+                        set_group(c, None);
+                    }
+                }
+            }
+            Edit::MoveCues {
+                ids,
+                anchor,
+                after,
+                group,
+            } => {
+                let cues = obj["cues"].as_array_mut().expect("cues");
+                let mut idx = ids
+                    .iter()
+                    .map(|id| cue_index(cues, id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                idx.sort_unstable();
+                idx.dedup();
+                let ordered: Vec<String> = idx
+                    .iter()
+                    .map(|&i| cues[i]["id"].as_str().unwrap_or_default().to_string())
+                    .collect();
+                if let Some(Some(g)) = &group
+                    && members(cues, g).is_empty()
+                {
+                    return Err("That group is no longer in the show.".into());
+                }
+                move_block(cues, &ordered, &anchor, after)?;
+                if let Some(g) = group {
+                    for c in cues.iter_mut() {
+                        if c["id"]
+                            .as_str()
+                            .is_some_and(|id| ordered.iter().any(|x| x == id))
+                        {
+                            set_group(c, g.as_deref());
+                        }
+                    }
+                }
+                focus = ordered.first().cloned();
+            }
+            Edit::SetGroup { id, group } => {
+                let cues = obj["cues"].as_array_mut().expect("cues");
+                let i = cue_index(cues, &id)?;
+                let own = group_of(cues.get(i)).map(String::from);
+                if own == group {
+                    return Ok((manifest.clone(), Some(id)));
+                }
+                match &group {
+                    Some(to) => {
+                        let m = members(cues, to);
+                        let last = *m.last().ok_or("That group is no longer in the show.")?;
+                        let anchor = cues[last]["id"].as_str().unwrap_or_default().to_string();
+                        move_block(cues, std::slice::from_ref(&id), &anchor, true)?;
+                    }
+                    None => {
+                        let m = members(cues, own.as_deref().unwrap_or_default());
+                        if m.first() != Some(&i) {
+                            let last = *m.last().expect("the cue is a member");
+                            let anchor = cues[last]["id"].as_str().unwrap_or_default().to_string();
+                            move_block(cues, std::slice::from_ref(&id), &anchor, true)?;
+                        }
+                    }
+                }
+                let i = cue_index(cues, &id)?;
+                set_group(&mut cues[i], group.as_deref());
+                focus = Some(id);
             }
         }
     }
@@ -495,6 +729,241 @@ mod tests {
 
     fn mv(m: &Manifest, id: &str, to: usize) -> Manifest {
         apply(m, Edit::Move { id: id.into(), to }).unwrap().0
+    }
+
+    fn ap(m: &Manifest, e: Edit) -> Manifest {
+        apply(m, e).unwrap().0
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn creating_a_group_pulls_its_cues_together_and_keeps_the_rest_in_order() {
+        let m = grouped_show();
+        let (m, focus) = apply(
+            &m,
+            Edit::CreateGroup {
+                ids: ids(&["g07", "g01", "g05"]),
+                name: "  Scene 2  ".into(),
+                color: "#C98A14".into(),
+            },
+        )
+        .unwrap();
+        let g = m.groups.iter().find(|g| g.name == "Scene 2").unwrap();
+        assert_eq!(g.color, "#c98a14", "lowercased");
+        assert!(g.id.len() <= 64 && g.id.bytes().all(|b| b.is_ascii_alphanumeric()));
+        let gid = g.id.clone();
+        assert_eq!(
+            layout(&m),
+            [
+                format!("g01:{gid}"),
+                format!("g05:{gid}"),
+                format!("g07:{gid}"),
+                "g02:act1".into(),
+                "g03:act1".into(),
+                "g04:act1".into(),
+                "g06:storm".into(),
+            ]
+        );
+        assert_eq!(focus.as_deref(), Some("g01"));
+    }
+
+    #[test]
+    fn grouping_the_middle_of_a_group_is_refused() {
+        let e = apply(
+            &grouped_show(),
+            Edit::CreateGroup {
+                ids: ids(&["g03"]),
+                name: "Inner".into(),
+                color: "#3e7bd6".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("in the middle of"), "{e}");
+        // Its start or end is fine: those cues leave act1, which stays consecutive.
+        let m = ap(
+            &grouped_show(),
+            Edit::CreateGroup {
+                ids: ids(&["g04", "g05"]),
+                name: "Tail".into(),
+                color: "#3e7bd6".into(),
+            },
+        );
+        let l = layout(&m);
+        assert_eq!(&l[..3], ["g01", "g02:act1", "g03:act1"]);
+        assert!(
+            l[3].starts_with("g04:g") && l[4].starts_with("g05:g"),
+            "{l:?}"
+        );
+    }
+
+    #[test]
+    fn group_names_and_colours_are_checked() {
+        let e = |name: &str, color: &str| {
+            apply(
+                &grouped_show(),
+                Edit::EditGroup {
+                    id: "act1".into(),
+                    name: name.into(),
+                    color: color.into(),
+                },
+            )
+        };
+        assert!(e("   ", "#3e7bd6").is_err());
+        assert!(e("Act", "blue").is_err());
+        let m = e(&"x".repeat(80), "#1F9E9A").unwrap().0;
+        let g = m.groups.iter().find(|g| g.id == "act1").unwrap();
+        assert_eq!(g.name.len(), GROUP_NAME_MAX);
+        assert_eq!(g.color, "#1f9e9a");
+    }
+
+    #[test]
+    fn ungrouping_keeps_the_cues_where_they_are() {
+        let m = ap(&grouped_show(), Edit::Ungroup { id: "act1".into() });
+        assert_eq!(
+            layout(&m),
+            ["g01", "g02", "g03", "g04", "g05", "g06:storm", "g07:storm"]
+        );
+        assert_eq!(m.groups.len(), 1);
+        assert!(apply(&m, Edit::Ungroup { id: "act1".into() }).is_err());
+    }
+
+    #[test]
+    fn dragging_a_whole_group_moves_its_cues_and_keeps_membership() {
+        let m = ap(
+            &grouped_show(),
+            Edit::MoveCues {
+                ids: ids(&["g06", "g07"]),
+                anchor: "g01".into(),
+                after: false,
+                group: None,
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g06:storm",
+                "g07:storm",
+                "g01",
+                "g02:act1",
+                "g03:act1",
+                "g04:act1",
+                "g05"
+            ]
+        );
+    }
+
+    #[test]
+    fn dragging_a_cue_sets_the_group_it_lands_in() {
+        // Onto act1's middle row: joins act1.
+        let m = ap(
+            &grouped_show(),
+            Edit::MoveCues {
+                ids: ids(&["g01"]),
+                anchor: "g03".into(),
+                after: true,
+                group: Some(Some("act1".into())),
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g02:act1",
+                "g03:act1",
+                "g01:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+        // To the end (empty space): leaves its group.
+        let m = ap(
+            &grouped_show(),
+            Edit::MoveCues {
+                ids: ids(&["g02"]),
+                anchor: "g07".into(),
+                after: true,
+                group: Some(None),
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm",
+                "g02"
+            ]
+        );
+    }
+
+    #[test]
+    fn inspector_group_field_joins_at_the_end_and_leaves_below() {
+        let m = ap(
+            &grouped_show(),
+            Edit::SetGroup {
+                id: "g01".into(),
+                group: Some("storm".into()),
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g02:act1",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm",
+                "g01:storm"
+            ]
+        );
+        // Leaving from the middle: just below the group.
+        let m = ap(
+            &grouped_show(),
+            Edit::SetGroup {
+                id: "g03".into(),
+                group: None,
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g02:act1",
+                "g04:act1",
+                "g03",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
+        // Leaving as the first cue: stays put.
+        let m = ap(
+            &grouped_show(),
+            Edit::SetGroup {
+                id: "g02".into(),
+                group: None,
+            },
+        );
+        assert_eq!(
+            layout(&m),
+            [
+                "g01",
+                "g02",
+                "g03:act1",
+                "g04:act1",
+                "g05",
+                "g06:storm",
+                "g07:storm"
+            ]
+        );
     }
 
     #[test]

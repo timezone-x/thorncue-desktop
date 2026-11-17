@@ -97,6 +97,96 @@ pub fn delete_cue(id: String, app: AppHandle) -> Result<EditResult, String> {
     edit(&app, None, Edit::Delete { id }, vec![])
 }
 
+// ---- Groups (thorncue-spec#2) ----
+
+#[tauri::command]
+pub fn create_group(
+    ids: Vec<String>,
+    name: String,
+    color: String,
+    app: AppHandle,
+) -> Result<EditResult, String> {
+    edit(&app, None, Edit::CreateGroup { ids, name, color }, vec![])
+}
+
+#[tauri::command]
+pub fn edit_group(
+    id: String,
+    name: String,
+    color: String,
+    app: AppHandle,
+) -> Result<EditResult, String> {
+    edit(&app, None, Edit::EditGroup { id, name, color }, vec![])
+}
+
+#[tauri::command]
+pub fn ungroup(id: String, app: AppHandle) -> Result<EditResult, String> {
+    edit(&app, None, Edit::Ungroup { id }, vec![])
+}
+
+/// `set_group`: false leaves membership alone (a whole group dragged); true sets `group`.
+#[tauri::command]
+pub fn move_cues(
+    ids: Vec<String>,
+    anchor: String,
+    after: bool,
+    set_group: bool,
+    group: Option<String>,
+    app: AppHandle,
+) -> Result<EditResult, String> {
+    let group = set_group.then_some(group);
+    edit(
+        &app,
+        None,
+        Edit::MoveCues {
+            ids,
+            anchor,
+            after,
+            group,
+        },
+        vec![],
+    )
+}
+
+#[tauri::command]
+pub fn set_cue_group(
+    id: String,
+    group: Option<String>,
+    app: AppHandle,
+) -> Result<EditResult, String> {
+    edit(&app, None, Edit::SetGroup { id, group }, vec![])
+}
+
+/// Collapse or expand a group on this machine (local.json, never the show file).
+#[tauri::command]
+pub fn set_group_collapsed(
+    id: String,
+    collapsed: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let mut guard = state.open_show.lock().map_err(|_| busy())?;
+    let s = guard.as_mut().ok_or("No show is open.")?;
+    let known: Vec<&str> = s.manifest.groups.iter().map(|g| g.id.as_str()).collect();
+    let mut list: Vec<String> = s
+        .local
+        .collapsed_groups
+        .iter()
+        .filter(|g| known.contains(&g.as_str()) && **g != id)
+        .cloned()
+        .collect();
+    if collapsed && known.contains(&id.as_str()) {
+        list.push(id);
+    }
+    s.local.collapsed_groups = list.clone();
+    let dir = s.dir.clone();
+    drop(guard);
+    // A view setting: if it can't be written, it's only forgotten next time.
+    if let Err(e) = crate::library::update_local(&dir, |l| l.collapsed_groups = list.clone()) {
+        tracing::warn!("couldn't remember collapsed groups: {e:#}");
+    }
+    Ok(list)
+}
+
 #[tauri::command]
 pub fn set_show_name(name: String, app: AppHandle) -> Result<EditResult, String> {
     edit(&app, None, Edit::ShowName(name), vec![])

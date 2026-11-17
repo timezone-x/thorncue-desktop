@@ -3,7 +3,7 @@
   // the bind* handlers). Every change goes straight to Rust, which validates, autosaves and
   // tells the engine; a playing cue's volume follows the slider live.
   // Hide and height are a per-viewer convenience, remembered in localStorage.
-  import type { Cue, CuePatch } from "../lib/api";
+  import type { Cue, CuePatch, Group } from "../lib/api";
   import { syncValue } from "../lib/sync";
   import Trim from "./Trim.svelte";
 
@@ -14,6 +14,8 @@
     onDuplicate,
     onReplace,
     onDelete,
+    groups = [],
+    onSetGroup,
     hidden = $bindable(),
   }: {
     cue: Cue | null;
@@ -22,6 +24,9 @@
     onDuplicate: (id: string) => void;
     onReplace: (id: string) => void;
     onDelete: (cue: Cue, index: number) => void;
+    groups?: Group[];
+    /** The Group field (thorncue-spec#2): join puts the cue at the group's end. */
+    onSetGroup?: (id: string, group: string | null) => void;
     /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
     hidden?: boolean;
   } = $props();
@@ -149,6 +154,16 @@
             <input type="text" id="f-name" maxlength="100" autocomplete="off" use:syncValue={cue.name}
               oninput={(e) => name(e.currentTarget)} />
           </div>
+          {#if groups.length}
+            <div class="field">
+              <label for="f-group">Group</label>
+              <select id="f-group" value={cue.group ?? ""}
+                onchange={(e) => onSetGroup?.(cue.id, e.currentTarget.value || null)}>
+                <option value="">No group</option>
+                {#each groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
+              </select>
+            </div>
+          {/if}
           {#if audio}
             <div class="field">
               <label for="f-vol">Volume (%)</label>
