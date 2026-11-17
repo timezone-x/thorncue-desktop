@@ -25,7 +25,7 @@ npm run check                         # svelte-check / TypeScript
 npm run tauri build                   # local installer for this OS
 ```
 
-CI (`.github/workflows/`) runs fmt, clippy, tests, svelte-check and a build on Linux, Windows and macOS. Keep it green.
+CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and svelte-check on Linux (ubuntu-24.04) for pull requests that change more than `*.md` or `docs/`, or by hand (workflow_dispatch). Windows and macOS are only built by `release.yml` on a `v*` tag, so be careful with platform-specific code. Keep it green.
 
 ## Layout
 
