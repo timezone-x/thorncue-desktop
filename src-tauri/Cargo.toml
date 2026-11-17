@@ -34,6 +34,8 @@ sha2 = "0.11.1"
 # rustls (no OpenSSL); blocking client, used from blocking tasks.
 reqwest = { version = "0.13.5", features = ["blocking"] }
 keyring = "4.2.0"
+# Keeps the screen and machine awake while a show is open (M8).
+keepawake = "0.6.1"
 
 [dev-dependencies]
 tiny_http = "0.12.0"

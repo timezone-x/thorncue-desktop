@@ -156,6 +156,7 @@ Locations from Tauri's path API:
 <app_data_dir>/library/<show-uuid>/audio/<asset>.<ext>
 <app_data_dir>/library/<show-uuid>/local.json          client-only state (see below)
 <app_data_dir>/tmp/                                    imports and downloads in progress
+<app_data_dir>/session.json                            the open show, while one is open (crash recovery)
 <app_config_dir>/settings.json
 ```
 
@@ -170,6 +171,11 @@ Writing:
 - On open: if `manifest.json` doesn't parse, open `.bak` and tell the user which version was recovered.
 - Audio added to a show is **copied** into its `audio/` folder with a new asset id (`uuid` simple, lowercased). Shows never reference files outside their folder, so a show folder is always self-contained and exportable.
 - Deleting a show moves its folder to the OS trash.
+
+Show readiness (M8, `src-tauri/src/session.rs`):
+
+- **Keep-awake:** while a show is open, the display and the machine are kept awake (`keepawake`: SetThreadExecutionState, an IOKit assertion, or a systemd/D-Bus inhibitor). It's released when the show closes or the app quits. If the OS refuses, the operator is told once per run to turn sleep off by hand. It never blocks opening the show.
+- **Crash recovery:** `session.json` names the open show. It's written atomically when a show opens and removed when it closes and on a clean exit. If it's there at the next start, the last run ended uncleanly, and that show opens again at the standby its `local.json` holds (kept current by the standby saver), with a banner saying so. Nothing plays until GO. The marker is read and cleared at start, so a crash during startup can't loop.
 
 ## Importing from ThornCue Web
 

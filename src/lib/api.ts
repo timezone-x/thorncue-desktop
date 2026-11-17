@@ -106,6 +106,8 @@ export const api = {
   deleteShow: (id: string) => invoke<void>("delete_show", { id }),
   openShow: (id: string) => invoke<ShowView>("open_show", { id }),
   closeShow: () => invoke<void>("close_show"),
+  /** After an unclean exit: the last show, reopened at its standby (nothing plays). */
+  recoverSession: () => invoke<{ show: ShowView; message: string } | null>("recover_session"),
 };
 
 // ---- Engine (crates/engine/src/state.rs) ----

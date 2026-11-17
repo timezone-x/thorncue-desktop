@@ -8,6 +8,7 @@ mod fsutil;
 mod library;
 mod playback;
 mod saver;
+mod session;
 mod settings;
 mod web;
 mod web_cmds;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub tmp_dir: PathBuf,
     pub engine: engine::Engine,
     pub saver: saver::Saver,
+    /// Keep-awake and crash recovery (M8).
+    pub session: session::Session,
 }
 
 pub fn run() {
@@ -55,6 +58,7 @@ pub fn run() {
             let init = settings::theme_init_script(&settings);
             let settings = settings.sanitised();
             let library = Library::new(&data_dir)?;
+            let session = session::Session::start(&data_dir);
             let tmp_dir = data_dir.join("tmp");
             // Anything left here is from a download that was interrupted.
             let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -74,6 +78,7 @@ pub fn run() {
                 tmp_dir,
                 engine,
                 saver: saver::Saver::start(app.handle().clone()),
+                session,
             });
 
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -99,6 +104,7 @@ pub fn run() {
             commands::import_file,
             commands::delete_show,
             commands::open_show,
+            commands::recover_session,
             commands::close_show,
             commands::get_open_show,
             commands::get_engine_state,
@@ -156,11 +162,17 @@ pub fn run() {
                 event: tauri::WindowEvent::CloseRequested { .. },
                 ..
             }
-            | tauri::RunEvent::ExitRequested { .. }
-            | tauri::RunEvent::Exit => {
+            | tauri::RunEvent::ExitRequested { .. } => {
                 if let Err(e) = saver::save_now(app) {
                     tracing::error!("saving on exit: {e}");
                 }
+            }
+            tauri::RunEvent::Exit => {
+                if let Err(e) = saver::save_now(app) {
+                    tracing::error!("saving on exit: {e}");
+                }
+                // A clean exit: nothing to recover next time, and the computer may sleep again.
+                app.state::<AppState>().session.show_closed();
             }
             _ => {}
         });
