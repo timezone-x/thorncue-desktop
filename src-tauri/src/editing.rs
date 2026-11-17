@@ -103,6 +103,92 @@ pub enum Edit {
         id: String,
         group: Option<String>,
     },
+    /// A `.tqc`/`.tqg`'s cues added at the end (FORMAT.md 6.4), already given new ids by
+    /// [`prepare_piece`].
+    AddPiece(PreparedPiece),
+}
+
+/// A validated `.tqc` or `.tqg` with every cue, asset and group given a new id (FORMAT.md 6.4).
+#[derive(Debug, Clone)]
+pub struct PreparedPiece {
+    pub kind: tqs::Kind,
+    pub cues: Vec<Value>,
+    /// New assets for the show's manifest (id, asset JSON). Files the show already holds
+    /// (same SHA-256 and size) reuse its asset and aren't listed.
+    pub assets: Vec<(String, Value)>,
+    pub group: Option<Value>,
+    /// Audio to move in: (unpacked file, path inside the show folder).
+    pub files: Vec<(std::path::PathBuf, String)>,
+}
+
+/// Give a validated piece (unpacked in `piece_dir`) new ids for `show` (FORMAT.md 6.4: nothing
+/// is merged into something already in the show; a `.tqg`'s cues stay one new group with the
+/// file's name and colour; a `.tqc` brings plain cues).
+pub fn prepare_piece(
+    show: &Manifest,
+    show_dir: &Path,
+    piece: &Manifest,
+    piece_dir: &Path,
+) -> PreparedPiece {
+    // Audio the show already holds, by content.
+    let held: std::collections::HashMap<(&str, u64), &str> = show
+        .assets
+        .iter()
+        .filter(|(_, a)| show_dir.join(&a.path).is_file())
+        .map(|(id, a)| ((a.sha256.as_str(), a.bytes), id.as_str()))
+        .collect();
+    let mut asset_map = std::collections::HashMap::new();
+    let mut assets = Vec::new();
+    let mut files = Vec::new();
+    for (old, a) in &piece.assets {
+        if let Some(id) = held.get(&(a.sha256.as_str(), a.bytes)) {
+            asset_map.insert(old.clone(), id.to_string());
+            continue;
+        }
+        let id = new_id();
+        let ext = Path::new(&a.path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let rel = format!("audio/{id}.{ext}");
+        files.push((piece_dir.join(&a.path), rel.clone()));
+        assets.push((
+            id.clone(),
+            json!({"path": rel, "sha256": a.sha256, "bytes": a.bytes}),
+        ));
+        asset_map.insert(old.clone(), id);
+    }
+    let group = (piece.kind == tqs::Kind::Group)
+        .then(|| piece.groups.first())
+        .flatten()
+        .map(|g| json!({"id": format!("g{}", &new_id()[..10]), "name": g.name, "color": g.color}));
+    let gid = group.as_ref().map(|g| g["id"].clone());
+    let cues = piece
+        .cues
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::to_value(c).expect("a cue serialises");
+            v["id"] = json!(new_id());
+            v["asset"] = match c.asset.as_ref().and_then(|a| asset_map.get(a)) {
+                Some(id) => json!(id),
+                None => Value::Null,
+            };
+            match &gid {
+                Some(g) => v["group"] = g.clone(),
+                None => {
+                    v.as_object_mut().expect("cue").remove("group");
+                }
+            }
+            v
+        })
+        .collect();
+    PreparedPiece {
+        kind: piece.kind,
+        cues,
+        assets,
+        group,
+        files,
+    }
 }
 
 /// Most a group name may be (FORMAT.md 2.7).
@@ -450,6 +536,26 @@ pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String
                 let i = cue_index(cues, &id)?;
                 set_group(&mut cues[i], group.as_deref());
                 focus = Some(id);
+            }
+            Edit::AddPiece(p) => {
+                let assets = obj["assets"].as_object_mut().expect("assets");
+                for (id, a) in p.assets {
+                    assets.insert(id, a);
+                }
+                if let Some(g) = p.group {
+                    obj.entry("groups")
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut()
+                        .ok_or("This show's groups are damaged.")?
+                        .push(g);
+                }
+                let cues = obj["cues"].as_array_mut().expect("cues");
+                focus = p
+                    .cues
+                    .first()
+                    .and_then(|c| c["id"].as_str())
+                    .map(String::from);
+                cues.extend(p.cues);
             }
         }
     }
@@ -963,6 +1069,100 @@ mod tests {
                 "g06:storm",
                 "g07:storm"
             ]
+        );
+    }
+
+    /// Fixture 06 unpacked into `dir/show`, and `piece` of it written and read back into `dir/piece`.
+    fn piece_of(
+        dir: &Path,
+        piece: tqs::Piece,
+    ) -> (Manifest, std::path::PathBuf, Manifest, std::path::PathBuf) {
+        let show_dir = dir.join("show");
+        let (show, _) = tqs::read_package(
+            &fixture("valid/06-groups.tqs"),
+            &show_dir,
+            tqs::Limits::default(),
+        )
+        .unwrap();
+        let file = dir.join("piece.zip");
+        tqs::write_piece(&show_dir, &file, &piece).unwrap();
+        let piece_dir = dir.join("piece");
+        let (p, _) = tqs::read_package_of(
+            &file,
+            &piece_dir,
+            tqs::Limits::default(),
+            &tqs::Kind::ALL,
+            &mut |_| {},
+        )
+        .unwrap();
+        (show, show_dir, p, piece_dir)
+    }
+
+    #[test]
+    fn a_tqg_comes_in_as_a_new_group_at_the_end_with_new_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (show, show_dir, piece, piece_dir) =
+            piece_of(tmp.path(), tqs::Piece::Group("storm".into()));
+        let p = prepare_piece(&show, &show_dir, &piece, &piece_dir);
+        assert!(
+            p.files.is_empty() && p.assets.is_empty(),
+            "the show already holds this audio: reused, not copied"
+        );
+        let (m, focus) = apply(&show, Edit::AddPiece(p)).unwrap();
+        assert_eq!(m.cues.len(), 9);
+        assert_eq!(m.groups.len(), 3);
+        let storms: Vec<_> = m.groups.iter().filter(|g| g.name == "Storm").collect();
+        assert_eq!(storms.len(), 2, "never merged into the existing group");
+        let new = storms.iter().find(|g| g.id != "storm").unwrap();
+        assert_eq!(
+            &m.cues[7..]
+                .iter()
+                .map(|c| c.group.as_deref())
+                .collect::<Vec<_>>(),
+            &[Some(new.id.as_str()); 2]
+        );
+        assert_eq!(m.cues[7].name, "Thunder");
+        assert_eq!(
+            m.cues[7].asset, m.cues[5].asset,
+            "shares the asset it already had"
+        );
+        assert!(
+            m.cues[7..].iter().all(|c| !c.id.starts_with('g')),
+            "new cue ids"
+        );
+        assert_eq!(focus.as_deref(), Some(m.cues[7].id.as_str()));
+        assert_eq!(
+            &layout(&m)[..7],
+            &layout(&show)[..],
+            "the rest of the show is untouched"
+        );
+    }
+
+    #[test]
+    fn a_tqc_brings_plain_cues_and_copies_audio_the_show_lacks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, _, piece, piece_dir) = piece_of(
+            tmp.path(),
+            tqs::Piece::Cues(vec!["g02".into(), "g06".into()]),
+        );
+        let empty_dir = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        let empty = empty_show("S");
+        let p = prepare_piece(&empty, &empty_dir, &piece, &piece_dir);
+        assert_eq!(p.files.len(), p.assets.len());
+        assert!(!p.files.is_empty());
+        assert!(p.group.is_none());
+        for (from, rel) in &p.files {
+            assert!(from.is_file());
+            assert!(rel.starts_with("audio/") && !rel.contains(".."));
+        }
+        let (m, _) = apply(&empty, Edit::AddPiece(p)).unwrap();
+        assert_eq!(m.cues.len(), 2);
+        assert!(m.groups.is_empty() && m.cues.iter().all(|c| c.group.is_none()));
+        assert!(
+            m.cues
+                .iter()
+                .all(|c| c.asset.as_ref().is_some_and(|a| m.assets.contains_key(a)))
         );
     }
 

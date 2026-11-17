@@ -25,7 +25,7 @@ pub use read::{
     PackageKind, Progress, detect_kind, read_package, read_package_of, read_package_with_progress,
 };
 pub use time::now_rfc3339;
-pub use write::{write_package, write_package_with_progress};
+pub use write::{Piece, write_package, write_package_with_progress, write_piece};
 
 /// Reader limits (FORMAT.md 1.3). The desktop default for the total is 4 GiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

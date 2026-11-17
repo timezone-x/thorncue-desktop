@@ -9,7 +9,7 @@ use zip::CompressionMethod;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
 use crate::error::{Result, TqsError};
-use crate::manifest::{Generator, Manifest};
+use crate::manifest::{Generator, Kind, Manifest};
 use crate::read::Progress;
 use crate::time::now_rfc3339;
 use crate::zipcheck::hex;
@@ -30,8 +30,64 @@ pub fn write_package_with_progress(
 ) -> Result<Manifest> {
     let mpath = show_dir.join("manifest.json");
     let bytes = std::fs::read(&mpath).map_err(TqsError::io("read", &mpath))?;
-    let (mut manifest, _) = Manifest::from_slice(&bytes)?;
+    let (manifest, _) = Manifest::from_slice(&bytes)?;
+    write_manifest_package(show_dir, manifest, out_path, on_progress)
+}
 
+/// What goes into a `.tqc` or `.tqg` (FORMAT.md 6).
+#[derive(Debug, Clone)]
+pub enum Piece {
+    /// These cues (any order; the file keeps show order) as a `.tqc`: no groups.
+    Cues(Vec<String>),
+    /// One group and all its cues as a `.tqg`.
+    Group(String),
+}
+
+/// Write part of a show folder as a `.tqc` or `.tqg` (FORMAT.md 6.1-6.3): the picked cues in
+/// show order, only the assets they use, and for a group exactly that group. Same writer as a
+/// show, so the same checks, temp file and rename apply.
+pub fn write_piece(show_dir: &Path, out_path: &Path, piece: &Piece) -> Result<Manifest> {
+    let mpath = show_dir.join("manifest.json");
+    let bytes = std::fs::read(&mpath).map_err(TqsError::io("read", &mpath))?;
+    let (mut manifest, _) = Manifest::from_slice(&bytes)?;
+    match piece {
+        Piece::Cues(ids) => {
+            manifest.kind = Kind::Cues;
+            manifest.cues.retain(|c| ids.contains(&c.id));
+            for c in &mut manifest.cues {
+                c.group = None;
+            }
+            manifest.groups.clear();
+            if manifest.cues.is_empty() {
+                return Err(TqsError::invalid("Those cues are no longer in the show."));
+            }
+        }
+        Piece::Group(id) => {
+            manifest.kind = Kind::Group;
+            manifest
+                .cues
+                .retain(|c| c.group.as_deref() == Some(id.as_str()));
+            manifest.groups.retain(|g| &g.id == id);
+            if manifest.cues.is_empty() || manifest.groups.len() != 1 {
+                return Err(TqsError::invalid("That group is no longer in the show."));
+            }
+        }
+    }
+    let used: std::collections::HashSet<String> = manifest
+        .cues
+        .iter()
+        .filter_map(|c| c.asset.clone())
+        .collect();
+    manifest.assets.retain(|id, _| used.contains(id));
+    write_manifest_package(show_dir, manifest, out_path, &mut |_| {})
+}
+
+fn write_manifest_package(
+    show_dir: &Path,
+    mut manifest: Manifest,
+    out_path: &Path,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<Manifest> {
     // Pass 1: hash every file; drop the ones that aren't there.
     let mut missing = Vec::new();
     for (id, asset) in manifest.assets.iter_mut() {
@@ -86,7 +142,7 @@ pub fn write_package_with_progress(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let tmp = tempfile::Builder::new()
-        .prefix(".tqs-export-")
+        .prefix(".thorncue-export-")
         .suffix(".part")
         .tempfile_in(out_dir)
         .map_err(TqsError::io("create a temporary file in", out_dir))?;

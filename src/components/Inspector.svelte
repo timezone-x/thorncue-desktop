@@ -16,6 +16,8 @@
     onDelete,
     groups = [],
     onSetGroup,
+    exportCount = 1,
+    onExport,
     hidden = $bindable(),
   }: {
     cue: Cue | null;
@@ -27,6 +29,9 @@
     groups?: Group[];
     /** The Group field (thorncue-spec#2): join puts the cue at the group's end. */
     onSetGroup?: (id: string, group: string | null) => void;
+    /** Export cue (.tqc): the shift-selected range when there is one, else this cue. */
+    exportCount?: number;
+    onExport?: () => void;
     /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
     hidden?: boolean;
   } = $props();
@@ -139,6 +144,10 @@
     <h2 class="inspector__title" id="insp-title">{cue ? `Q${index + 1} ${cue.name}` : "Inspector"}</h2>
     {#if cue}
       <button type="button" class="btn" onclick={() => onDuplicate(cue.id)}>Duplicate</button>
+      {#if onExport}
+        <button type="button" class="btn" title="Save as a .tqc file, audio and edits included, to import into another show"
+          onclick={onExport}>{exportCount > 1 ? `Export ${exportCount} cues` : "Export cue"}</button>
+      {/if}
       {#if audio}<button type="button" class="btn" onclick={() => onReplace(cue.id)}>Replace file</button>{/if}
       <button type="button" class="btn btn--danger" onclick={() => onDelete(cue, index)}>Delete</button>
     {/if}

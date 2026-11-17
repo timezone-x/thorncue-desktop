@@ -565,7 +565,11 @@ mod tests {
         };
         write_local(dir.path(), &local).unwrap();
         assert_eq!(read_local(dir.path()).collapsed_groups, ["act1"]);
-        assert!(!read_local(dir.path()).extra.contains_key("collapsed_groups"));
+        assert!(
+            !read_local(dir.path())
+                .extra
+                .contains_key("collapsed_groups")
+        );
         update_local(dir.path(), |l| l.collapsed_groups.clear()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("local.json")).unwrap();
         assert!(!text.contains("collapsed_groups"), "{text}");

@@ -7,6 +7,7 @@
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
     AUDIO_EXTENSIONS,
+    PIECE_EXTENSIONS,
     editApi,
     errorText,
     transport,
@@ -15,6 +16,7 @@
     type CuePrep,
     type EditResult,
     type Group,
+    type Piece,
     type ShowView,
   } from "../lib/api";
   import { GROUP_COLORS, safeColor } from "../lib/groups";
@@ -428,14 +430,66 @@
     void act(() => transport.setStandby(i));
   }
 
-  /** Dropped files on the Show screen: audio becomes cues (App routes drops here). */
+  /** Dropped files on the Show screen: audio becomes cues, .tqc/.tqg are imported (App routes
+   * drops here). */
   export function dropFiles(paths: string[]) {
     if (paths.some((p) => /\.(tqs|zip)$/i.test(p))) {
       showToast("Import shows from the Library.", true);
       return;
     }
-    void addAudio(paths);
+    const pieces = paths.filter((p) => /\.(tqc|tqg)$/i.test(p));
+    const rest = paths.filter((p) => !/\.(tqc|tqg)$/i.test(p));
+    if (pieces.length) void importPieces(pieces);
+    if (rest.length) void addAudio(rest);
   }
+
+  // ---- .tqc / .tqg (thorncue-spec#3; web importPieces, build_package) ----
+
+  /** Add cue and group files at the end of the show (FORMAT.md 6.4). Each file is checked whole
+   * in Rust first; a bad one is skipped and named. Standby doesn't move. */
+  async function importPieces(paths: string[]) {
+    showToast(paths.length === 1 ? `Importing ${paths[0].split(/[\\/]/).pop()}…` : `Importing ${paths.length} files…`);
+    try {
+      const r = await editApi.importPieces(paths);
+      onChanged(r.show);
+      const done = r.added.map((a) =>
+        a.kind === "group" ? `group "${a.group}" (${plural(a.cues, "cue")}) from ${a.file}` : `${plural(a.cues, "cue")} from ${a.file}`,
+      );
+      const text = [done.length ? `Added ${done.join("; ")}.` : "", ...r.problems].filter(Boolean).join(" ");
+      showToast(text, r.problems.length > 0);
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
+  async function pickPieces() {
+    const picked = await openDialog({
+      multiple: true,
+      title: "Import cues",
+      filters: [{ name: "ThornCue cues or group", extensions: PIECE_EXTENSIONS }],
+    });
+    if (picked) await importPieces(Array.isArray(picked) ? picked : [picked]);
+  }
+
+  async function exportPiece(piece: Piece) {
+    try {
+      const name = await editApi.pieceFileName(piece);
+      const isGroup = !!piece.group;
+      const path = await saveDialog({
+        title: isGroup ? "Export group" : "Export cues",
+        defaultPath: name,
+        filters: [isGroup ? { name: "ThornCue group", extensions: ["tqg"] } : { name: "ThornCue cues", extensions: ["tqc"] }],
+      });
+      if (!path) return;
+      await editApi.exportPiece(piece, path);
+      showToast(`Exported to ${path.split(/[\\/]/).pop()}.`);
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
+  /** As the web's exportCueIds: the shift-selected range, else the inspected cue. */
+  const exportIds = $derived(selected.size > 1 ? cues.filter((c) => selected.has(c.id)).map((c) => c.id) : inspected ? [inspected.id] : []);
 
   // Keep the standby row in view, instantly (DESIGN.md: no smooth scroll during a show).
   $effect(() => {
@@ -723,6 +777,8 @@
     <button type="button" class="btn" onclick={() => edit(() => editApi.addControlCue(false))}>Add fade-out</button>
     <button type="button" class="btn" aria-keyshortcuts="G" title="Put the selected cues in a group (G). Shift-click a cue to select a range."
       onclick={() => openGroupDialog()}>Group</button>
+    <button type="button" class="btn" title="Add cues from a .tqc (cues) or .tqg (group) file. You can also drop them on the cue list."
+      onclick={pickPieces}>Import cues</button>
     <span class="cue-toolbar__selected" aria-live="polite">{selected.size > 1 ? `${selected.size} selected` : ""}</span>
     <span class="cue-toolbar__count num">{plural(cues.length, "cue")}</span>
   </div>
@@ -807,6 +863,7 @@
 
   <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
     onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
+    exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
@@ -818,7 +875,8 @@
       onCancel={() => (groupDialog = null)} />
   {:else}
     <GroupDialog mode="edit" initialName={d.group.name} initialColor={d.group.color} hint={d.hint} onSave={saveGroup}
-      onUngroup={() => ungroup(d.group)} onCancel={() => (groupDialog = null)} />
+      onUngroup={() => ungroup(d.group)} onCancel={() => (groupDialog = null)}
+      onExport={() => { groupDialog = null; void exportPiece({ group: d.group.id }); }} />
   {/if}
 {/if}
 

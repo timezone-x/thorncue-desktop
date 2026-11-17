@@ -283,7 +283,22 @@ export const editApi = {
     invoke<EditResult>("move_cues", { ids, anchor, after, setGroup: group !== undefined, group: group ?? null }),
   setCueGroup: (id: string, group: string | null) => invoke<EditResult>("set_cue_group", { id, group }),
   setGroupCollapsed: (id: string, collapsed: boolean) => invoke<string[]>("set_group_collapsed", { id, collapsed }),
+  // .tqc / .tqg (thorncue-spec#3, FORMAT.md 6)
+  importPieces: (paths: string[]) => invoke<PiecesResult>("import_pieces", { paths }),
+  pieceFileName: (piece: Piece) => invoke<string>("piece_file_name", piece),
+  exportPiece: (piece: Piece, path: string) => invoke<void>("export_piece", { ...piece, path }),
 };
+
+/** What to export: some cues (.tqc) or one group (.tqg). */
+export type Piece = { ids: string[]; group?: null } | { ids?: null; group: string };
+
+export interface PiecesResult {
+  show: ShowView;
+  added: { file: string; kind: "cues" | "group"; cues: number; group: string | null }[];
+  problems: string[];
+}
+
+export const PIECE_EXTENSIONS = ["tqc", "tqg"];
 
 export const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "flac", "m4a", "aiff", "aif"];
 
