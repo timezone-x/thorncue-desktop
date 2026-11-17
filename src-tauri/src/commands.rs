@@ -258,7 +258,68 @@ pub fn open_show(
     *state.open_dir.lock().map_err(|_| busy())? = Some(loaded.dir.clone());
     *state.open_show.lock().map_err(|_| busy())? = Some(loaded);
     send(&state, Command::LoadShow(plan))?;
+    if let Some(warning) = state.session.show_opened(&id) {
+        let _ = app.emit(
+            "engine://notice",
+            engine::Notice {
+                text: warning,
+                error: true,
+            },
+        );
+    }
     Ok(v)
+}
+
+/// After an unclean exit (crash, kill, power cut): the show that was open, opened again at its
+/// standby cue, with a sentence saying so. Nothing plays. Only the first call after start gets
+/// it, and not once the operator has opened a show.
+#[derive(Debug, Clone, Serialize)]
+pub struct Recovered {
+    pub show: ShowView,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn recover_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<Recovered>, String> {
+    if state.open_show.lock().map_err(|_| busy())?.is_some() {
+        return Ok(None);
+    }
+    let Some(id) = state.session.take_recovered() else {
+        return Ok(None);
+    };
+    if !state
+        .library
+        .list()
+        .map_err(|_| busy())?
+        .iter()
+        .any(|s| s.id == id)
+    {
+        tracing::warn!("the show to recover ({id}) is no longer in the library");
+        return Ok(None);
+    }
+    let mut show = open_show(id, app, state.clone())?;
+    let standby = show.local.standby_index;
+    let at = match show.cues.get(standby) {
+        Some(c) => format!("Q{} {} is on standby", standby + 1, c.name),
+        None => "standby is at the end of the cue list".to_string(),
+    };
+    let message = format!(
+        "ThornCue didn't close properly last time, so \"{}\" is open again and {at}. Nothing is playing.",
+        show.name
+    );
+    // Shown as the Show screen's banner (with any backup notice), kept for this session.
+    let banner = match show.recovered.take() {
+        Some(b) => format!("{message} {b}"),
+        None => message.clone(),
+    };
+    if let Some(s) = state.open_show.lock().map_err(|_| busy())?.as_mut() {
+        s.recovered = Some(banner.clone());
+    }
+    show.recovered = Some(banner);
+    Ok(Some(Recovered { show, message }))
 }
 
 #[tauri::command]
@@ -268,6 +329,7 @@ pub fn close_show(app: AppHandle, state: State<'_, AppState>) -> Result<(), Stri
     send(&state, Command::LoadShow(engine::ShowPlan::default()))?;
     *state.open_dir.lock().map_err(|_| busy())? = None;
     *state.open_show.lock().map_err(|_| busy())? = None;
+    state.session.show_closed();
     Ok(())
 }
 

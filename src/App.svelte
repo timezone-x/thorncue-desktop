@@ -53,6 +53,14 @@
         if (open) {
           show = open;
           screen = "show";
+        } else {
+          // The last run ended without closing properly (crash, power cut): Rust reopens the
+          // show it had open, at its standby cue. Nothing plays until GO.
+          const r = await api.recoverSession();
+          if (r) {
+            show = r.show; // r.message is also the Show screen's banner
+            screen = "show";
+          }
         }
       } catch (e) {
         showToast(errorText(e), true);
