@@ -116,7 +116,7 @@ pub fn edit_group(
     color: String,
     app: AppHandle,
 ) -> Result<EditResult, String> {
-    edit(&app, None, Edit::EditGroup { id, name, color }, vec![])
+    edit(&app, None, Edit::UpdateGroup { id, name, color }, vec![])
 }
 
 #[tauri::command]

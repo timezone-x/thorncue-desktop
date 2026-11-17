@@ -79,7 +79,7 @@ pub enum Edit {
         color: String,
     },
     /// Rename or recolour a group.
-    EditGroup {
+    UpdateGroup {
         id: String,
         name: String,
         color: String,
@@ -449,7 +449,7 @@ pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String
                 groups.push(json!({"id": gid, "name": name, "color": color}));
                 focus = ordered.first().cloned();
             }
-            Edit::EditGroup { id, name, color } => {
+            Edit::UpdateGroup { id, name, color } => {
                 let (name, color) = group_fields(&name, &color)?;
                 let g = obj
                     .get_mut("groups")
@@ -910,7 +910,7 @@ mod tests {
         let e = |name: &str, color: &str| {
             apply(
                 &grouped_show(),
-                Edit::EditGroup {
+                Edit::UpdateGroup {
                     id: "act1".into(),
                     name: name.into(),
                     color: color.into(),
