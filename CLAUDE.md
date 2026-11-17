@@ -2,7 +2,7 @@
 
 Free, open-source theatre sound-cue playback for Windows, macOS and Linux. A native rebuild of ThornCue Web (`timezone-x/thorncue-web`), which stays as the online, multi-user version. This app is what runs in the booth during a show.
 
-Read `docs/ARCHITECTURE.md` before changing anything structural. Playback rules are in `docs/format/FORMAT.md` section 2.5.
+Follow `SESSIONS.md` in `timezone-x/thorncue-spec` (attach it). Read `docs/ARCHITECTURE.md` before changing anything structural. Playback rules are in `docs/format/FORMAT.md` section 2.5.
 
 ## Rules that don't bend
 
@@ -10,7 +10,7 @@ Read `docs/ARCHITECTURE.md` before changing anything structural. Playback rules 
 2. **Never block GO.** Nothing on the GO path waits on disk, network, decoding or the UI. Nothing in an audio callback (`CueGain::process`, anything kira calls) allocates, locks or logs.
 3. **Stop all always wins.** It stops every running cue and cancels every pending start, including cues still waiting on decode. (A running audition on the separate audition output is deliberately left alone: `docs/ARCHITECTURE.md` "Stop all and the audition".)
 4. **Never lose a show.** Writes are atomic (temp file, fsync, rename) with a `.bak`. Imports go to a temp folder and only move into the library once fully validated. Deletes go to the OS trash.
-5. **`docs/format/` is shared with the web repo. Don't edit it.** If the spec looks wrong, stop and say so.
+5. **`docs/format/` is a copy of thorncue-spec's `format/`. Don't edit it.** `crates/tqs/tests/format_copy.rs` fails if you do. If the spec looks wrong, stop and say so.
 6. `crates/tqs` and `crates/engine` never depend on Tauri.
 
 ## Commands
@@ -25,7 +25,7 @@ npm run check                         # svelte-check / TypeScript
 npm run tauri build                   # local installer for this OS
 ```
 
-CI (`.github/workflows/`) runs fmt, clippy, tests, svelte-check and a build on Linux, Windows and macOS. Keep it green.
+CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and svelte-check on Linux (ubuntu-24.04) for pull requests that change more than `*.md` or `docs/`, or by hand (workflow_dispatch). Windows and macOS are only built by `release.yml` on a `v*` tag, so be careful with platform-specific code. Keep it green.
 
 ## Layout
 

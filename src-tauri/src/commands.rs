@@ -223,6 +223,7 @@ pub struct ShowView {
     pub notes: String,
     pub source: Option<tqs::Source>,
     pub cues: Vec<tqs::Cue>,
+    pub groups: Vec<tqs::Group>,
     pub local: LocalState,
     /// A sentence when the show was recovered from its backup.
     pub recovered: Option<String>,
@@ -236,6 +237,7 @@ pub(crate) fn view(s: &crate::library::LoadedShow) -> ShowView {
         notes: s.manifest.show.notes.clone(),
         source: s.manifest.show.source.clone(),
         cues: s.manifest.cues.clone(),
+        groups: s.manifest.groups.clone(),
         local: s.local.clone(),
         recovered: s.recovered.clone(),
     }

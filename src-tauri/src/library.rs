@@ -31,6 +31,10 @@ pub struct LocalState {
     /// (a LAN address can differ from the public URL in the manifest's `source`).
     pub web_server: Option<String>,
     pub web_code: Option<String>,
+    /// Groups shown collapsed on this machine (thorncue-spec#2). A view setting: never written
+    /// into the show (FORMAT.md 2.7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_groups: Vec<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -227,6 +231,8 @@ impl Library {
             modified_since_import: false,
             web_server: Some(origin.server.clone()),
             web_code: Some(origin.code.clone()),
+            // Same group ids after an update from the web: stay collapsed (unknown ids are ignored).
+            collapsed_groups: old_local.collapsed_groups,
             extra: old_local.extra,
         };
         if let Err(e) = write_local(&live, &local) {
@@ -549,6 +555,25 @@ pub fn update_local(dir: &Path, f: impl FnOnce(&mut LocalState)) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapsed_groups_are_kept_in_local_json_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = LocalState {
+            collapsed_groups: vec!["act1".into()],
+            ..Default::default()
+        };
+        write_local(dir.path(), &local).unwrap();
+        assert_eq!(read_local(dir.path()).collapsed_groups, ["act1"]);
+        assert!(
+            !read_local(dir.path())
+                .extra
+                .contains_key("collapsed_groups")
+        );
+        update_local(dir.path(), |l| l.collapsed_groups.clear()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("local.json")).unwrap();
+        assert!(!text.contains("collapsed_groups"), "{text}");
+    }
 
     fn fixture(rel: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
