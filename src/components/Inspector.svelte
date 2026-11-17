@@ -14,6 +14,7 @@
     onDuplicate,
     onReplace,
     onDelete,
+    hidden = $bindable(),
   }: {
     cue: Cue | null;
     index: number;
@@ -21,6 +22,8 @@
     onDuplicate: (id: string) => void;
     onReplace: (id: string) => void;
     onDelete: (cue: Cue, index: number) => void;
+    /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
+    hidden?: boolean;
   } = $props();
 
   const KEY = "thorncue.inspector";
@@ -34,7 +37,7 @@
     return { hidden: false, height: null };
   }
   const saved = load();
-  let hidden = $state(saved.hidden);
+  hidden = saved.hidden;
   let height = $state<number | null>(saved.height);
   let resizing = $state(false);
 
@@ -46,7 +49,8 @@
     }
   }
 
-  function toggle() {
+  /** The one show/hide: the bar's chevron, the header's Inspector button and `\` all use it. */
+  export function toggle() {
     hidden = !hidden;
     remember();
   }

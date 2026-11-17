@@ -60,6 +60,7 @@
   let saveMessage = $state("");
   let confirmDelete = $state<{ cue: Cue; index: number } | null>(null);
   let inspector = $state<ReturnType<typeof Inspector>>();
+  let inspectorHidden = $state(false);
 
   onMount(() => {
     void startEngineMirror();
@@ -369,6 +370,9 @@
       case "?":
         shortcutsDialog.showModal();
         break;
+      case "\\":
+        inspector?.toggle();
+        break;
       case "i":
       case "I":
         inspector?.trimKey("in");
@@ -409,6 +413,8 @@
     <span class="save-state" class:status-error={saveState === "error"} aria-live="polite" title={saveMessage}>
       {#if saveState === "unsaved"}Saving…{:else if saveState === "error"}Couldn't save{/if}
     </span>
+    <button type="button" class="btn" aria-controls="inspector" aria-pressed={!inspectorHidden} aria-keyshortcuts={"\\"}
+      title={inspectorHidden ? "Show inspector (\\)" : "Hide inspector (\\)"} onclick={() => inspector?.toggle()}>Inspector</button>
     <button type="button" class="btn" aria-keyshortcuts="?" onclick={() => shortcutsDialog.showModal()}>Shortcuts</button>
     <button type="button" class="btn" onclick={exportShow}>Export .tqs</button>
     <button type="button" class="btn" onclick={duplicateShow}>Duplicate show</button>
@@ -501,7 +507,7 @@
     {/if}
   </main>
 
-  <Inspector bind:this={inspector} cue={inspected} index={inspectedIndex} onEdit={updateCue}
+  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} onEdit={updateCue}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
@@ -532,6 +538,7 @@
         <tr><td><kbd>P</kbd></td><td>Pause or resume everything</td></tr>
         <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Move standby up or down</td></tr>
         <tr><td><kbd>J</kbd></td><td>Jump to a cue number and play it</td></tr>
+        <tr><td><kbd>&#92;</kbd></td><td>Show or hide the inspector</td></tr>
         <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Set the in or out point at the marker (or the audition playhead)</td></tr>
         <tr><td><kbd>X</kbd></td><td>Cut the selected section</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>Undo the last trim or cut</td></tr>
