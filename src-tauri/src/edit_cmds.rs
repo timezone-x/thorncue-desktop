@@ -117,16 +117,14 @@ async fn blocking<T: Send + 'static>(
 pub async fn add_audio_cues(paths: Vec<String>, app: AppHandle) -> Result<EditResult, String> {
     blocking(move || {
         let (id, dir) = open_dir(&app.state::<AppState>())?;
-        let mut files = Vec::new();
-        let mut problems = Vec::new();
-        for p in paths {
-            match editing::copy_audio_in(&dir, &PathBuf::from(&p)) {
-                Ok(f) => files.push(f),
-                Err(e) => problems.push(e),
-            }
-        }
+        let (files, problems) =
+            editing::copy_many(&dir, paths.into_iter().map(PathBuf::from).collect());
         if files.is_empty() {
-            return Err(problems.join(" "));
+            return Err(if problems.len() == 1 {
+                problems.join(" ")
+            } else {
+                format!("Couldn't add any of the files. {}", problems.join(" "))
+            });
         }
         edit(&app, Some(&id), Edit::AddAudio(files), problems)
     })

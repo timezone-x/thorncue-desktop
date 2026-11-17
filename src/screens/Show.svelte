@@ -86,14 +86,34 @@
 
   const updateCue = (id: string, patch: CuePatch) => edit(() => editApi.updateCue(id, patch));
 
+  // Many files at once (thorncue-spec#4, web `addAudioFiles`): Rust copies them in natural
+  // file-name order off the engine thread, skips any that fail and adds the rest in one edit;
+  // decoding then happens on the prep pool, so GO is never waiting on any of it.
+  let adding = $state(false);
   async function addAudio(paths: string[]) {
     const audio = paths.filter((p) => AUDIO_EXTENSIONS.includes(p.split(".").pop()?.toLowerCase() ?? ""));
     if (audio.length < paths.length) showToast("Only audio files (MP3, WAV, OGG, FLAC, M4A, AIFF) can be added as cues.", true);
     if (!audio.length) return;
-    const before = cues.length;
-    await edit(() => editApi.addAudioCues(audio));
-    const added = show.cues.length - before;
-    if (added > 0) showToast(added === 1 ? `Added Q${show.cues.length}.` : `Added ${added} cues.`);
+    if (adding) {
+      showToast("Still adding the last files. Try again when they're in.", true);
+      return;
+    }
+    adding = true;
+    if (audio.length > 1) showToast(`Adding ${audio.length} files…`);
+    try {
+      const before = cues.length;
+      const r = await editApi.addAudioCues(audio);
+      onChanged(r.show);
+      if (r.focus) inspectedId = r.focus;
+      const added = r.show.cues.length - before;
+      // One toast, so a later "Added" never hides which files failed.
+      if (r.problems.length) showToast(`Added ${added} of ${audio.length}. Couldn't add: ${r.problems.join(" ")}`, true);
+      else showToast(added === 1 ? `Added Q${r.show.cues.length} "${r.show.cues[r.show.cues.length - 1].name}".` : `Added ${added} cues.`);
+    } catch (e) {
+      showToast(errorText(e), true);
+    } finally {
+      adding = false;
+    }
   }
 
   async function pickAudio() {
@@ -458,7 +478,7 @@
   </div>
 
   <div class="cue-toolbar">
-    <button type="button" class="btn btn--primary" onclick={pickAudio}>Add cue</button>
+    <button type="button" class="btn btn--primary" disabled={adding} onclick={pickAudio}>{adding ? "Adding…" : "Add cue"}</button>
     <button type="button" class="btn" onclick={() => edit(() => editApi.addControlCue(true))}>Add silence</button>
     <button type="button" class="btn" onclick={() => edit(() => editApi.addControlCue(false))}>Add fade-out</button>
     <span class="cue-toolbar__count num">{plural(cues.length, "cue")}</span>

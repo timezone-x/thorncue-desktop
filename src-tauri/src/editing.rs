@@ -226,6 +226,64 @@ pub fn apply(manifest: &Manifest, edit: Edit) -> Result<(Manifest, Option<String
 
 /// Copy an audio file into `show_dir/audio/` under a new asset id, checking it plays first.
 /// Written to a temp file and renamed, so a failed copy leaves nothing.
+/// Natural file-name order, as the web's `localeCompare(b, undefined, { numeric: true,
+/// sensitivity: "base" })` (thorncue-spec#4): digit runs compare as numbers ("2" before "10"),
+/// letters ignore case. Ties fall back to the plain string so the order is always the same.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn runs(s: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for ch in s.chars() {
+            let digit = ch.is_ascii_digit();
+            match out.last_mut() {
+                Some((d, run)) if *d == digit => run.push(ch),
+                _ => out.push((digit, ch.to_string())),
+            }
+        }
+        out
+    }
+    let (ra, rb) = (runs(a), runs(b));
+    for ((da, x), (db, y)) in ra.iter().zip(rb.iter()) {
+        let ord = match (da, db) {
+            (true, true) => {
+                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty))
+            }
+            _ => x.to_lowercase().cmp(&y.to_lowercase()),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    ra.len().cmp(&rb.len()).then_with(|| a.cmp(b))
+}
+
+/// Sort paths for adding as cues: natural order of their file names (thorncue-spec#4).
+pub fn sort_by_file_name(paths: &mut [std::path::PathBuf]) {
+    let name = |p: &std::path::PathBuf| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    paths.sort_by(|a, b| natural_cmp(&name(a), &name(b)));
+}
+
+/// Copy many files in natural name order; a file that fails is skipped and its reason kept,
+/// so the rest still go in (thorncue-spec#4, as the web's `addAudioFiles`).
+pub fn copy_many(show_dir: &Path, paths: Vec<std::path::PathBuf>) -> (Vec<NewAudio>, Vec<String>) {
+    let mut paths = paths;
+    sort_by_file_name(&mut paths);
+    let mut files = Vec::new();
+    let mut problems = Vec::new();
+    for p in paths {
+        match copy_audio_in(show_dir, &p) {
+            Ok(f) => files.push(f),
+            Err(e) => problems.push(e),
+        }
+    }
+    (files, problems)
+}
+
 pub fn copy_audio_in(show_dir: &Path, src: &Path) -> Result<NewAudio, String> {
     let file_name = src
         .file_name()
@@ -313,6 +371,56 @@ pub fn empty_show(name: &str) -> Manifest {
 }
 
 #[cfg(test)]
+mod natural_order_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn files_are_added_in_natural_name_order() {
+        let mut paths: Vec<PathBuf> = [
+            "/a/Q10 door.wav",
+            "/b/q2 Bell.mp3",
+            "/a/Q1 preshow.wav",
+            "/c/Q02 thunder.wav",
+            "/a/intro.wav",
+            "/a/Q2 bell.wav",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        sort_by_file_name(&mut paths);
+        let names: Vec<_> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "intro.wav",
+                "Q1 preshow.wav",
+                "q2 Bell.mp3",
+                "Q2 bell.wav",
+                "Q02 thunder.wav",
+                "Q10 door.wav"
+            ]
+        );
+    }
+
+    #[test]
+    fn long_numbers_dont_overflow() {
+        use std::cmp::Ordering::Less;
+        assert_eq!(
+            natural_cmp(
+                "track 99999999999999999999999",
+                "track 100000000000000000000000"
+            ),
+            Less
+        );
+        assert_eq!(natural_cmp("a", "a1"), Less);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -387,6 +495,37 @@ mod tests {
 
     fn mv(m: &Manifest, id: &str, to: usize) -> Manifest {
         apply(m, Edit::Move { id: id.into(), to }).unwrap().0
+    }
+
+    #[test]
+    fn many_files_go_in_name_order_and_a_bad_one_is_skipped() {
+        let src = tempfile::tempdir().unwrap();
+        let show = tempfile::tempdir().unwrap();
+        for (from, to) in [
+            ("audio/tone-e330.mp3", "Q10 door.mp3"),
+            ("audio/tone-a440.wav", "Q2 bell.wav"),
+            ("audio/not-audio.txt", "Q3 broken.wav"),
+            ("audio/tone-g392.flac", "Q1 preshow.flac"),
+        ] {
+            std::fs::copy(fixture(from), src.path().join(to)).unwrap();
+        }
+        let paths = [
+            "Q10 door.mp3",
+            "Q3 broken.wav",
+            "Q2 bell.wav",
+            "Q1 preshow.flac",
+        ]
+        .iter()
+        .map(|n| src.path().join(n))
+        .collect();
+        let (files, problems) = copy_many(show.path(), paths);
+        let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Q1 preshow", "Q2 bell", "Q10 door"]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("Q3 broken.wav"), "{problems:?}");
+        let (m, _) = apply(&empty_show("S"), Edit::AddAudio(files)).unwrap();
+        let cue_names: Vec<_> = m.cues.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(cue_names, ["Q1 preshow", "Q2 bell", "Q10 door"]);
     }
 
     #[test]

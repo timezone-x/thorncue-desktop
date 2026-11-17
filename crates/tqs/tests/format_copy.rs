@@ -42,11 +42,16 @@ fn docs_format_matches_its_checksums() {
         .expect("docs/format/CHECKSUMS is missing: this copy wasn't made by tools/sync-format.sh");
     let mut lines = text.lines();
     let header = lines.next().unwrap_or_default();
-    assert!(header.starts_with("# thorncue-spec "), "bad CHECKSUMS header: {header}");
+    assert!(
+        header.starts_with("# thorncue-spec "),
+        "bad CHECKSUMS header: {header}"
+    );
     let want: BTreeMap<&str, &str> = lines
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            let (hash, name) = l.split_once("  ").expect("CHECKSUMS line without two spaces");
+            let (hash, name) = l
+                .split_once("  ")
+                .expect("CHECKSUMS line without two spaces");
             (name, hash)
         })
         .collect();
@@ -69,7 +74,11 @@ fn docs_format_matches_its_checksums() {
     assert!(
         problems.is_empty(),
         "docs/format differs from {} — re-sync it from thorncue-spec, don't edit it here:\n{}",
-        header.trim_start_matches("# ").split(". Generated").next().unwrap(),
+        header
+            .trim_start_matches("# ")
+            .split(". Generated")
+            .next()
+            .unwrap(),
         problems.join("\n")
     );
 }
