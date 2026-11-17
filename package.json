@@ -1,7 +1,7 @@
 {
   "name": "thorncue",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Theatre sound-cue playback",
   "license": "GPL-3.0-or-later",
   "type": "module",
