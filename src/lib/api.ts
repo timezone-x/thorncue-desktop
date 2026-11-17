@@ -53,6 +53,16 @@ export interface Cue {
   trim_start: number;
   trim_end: number | null;
   cuts: [number, number][];
+  /** The group this cue is in (FORMAT.md 2.7); absent when ungrouped. */
+  group?: string | null;
+}
+
+/** A cue group (FORMAT.md 2.7): a label only, never playback. */
+export interface Group {
+  id: string;
+  name: string;
+  /** `#rrggbb`, lowercase. */
+  color: string;
 }
 
 export interface LocalState {
@@ -61,6 +71,8 @@ export interface LocalState {
   imported_at: string | null;
   imported_revision: string | null;
   modified_since_import: boolean;
+  /** Groups collapsed on this machine (never in the show file). */
+  collapsed_groups?: string[];
 }
 
 export interface ShowView {
@@ -70,6 +82,7 @@ export interface ShowView {
   notes: string;
   source: { kind: string; server: string; code: string; revision: string } | null;
   cues: Cue[];
+  groups: Group[];
   local: LocalState;
   recovered: string | null;
 }
@@ -263,7 +276,31 @@ export const editApi = {
   duplicateShow: (id: string) => invoke<string>("duplicate_show", { id }),
   exportFileName: (id: string) => invoke<string>("export_file_name", { id }),
   exportShow: (id: string, path: string) => invoke<void>("export_show", { id, path }),
+  // Groups (thorncue-spec#2)
+  createGroup: (ids: string[], name: string, color: string) => invoke<EditResult>("create_group", { ids, name, color }),
+  editGroup: (id: string, name: string, color: string) => invoke<EditResult>("edit_group", { id, name, color }),
+  ungroup: (id: string) => invoke<EditResult>("ungroup", { id }),
+  /** `group`: undefined leaves membership alone (a whole group dragged); null or an id sets it. */
+  moveCues: (ids: string[], anchor: string, after: boolean, group?: string | null) =>
+    invoke<EditResult>("move_cues", { ids, anchor, after, setGroup: group !== undefined, group: group ?? null }),
+  setCueGroup: (id: string, group: string | null) => invoke<EditResult>("set_cue_group", { id, group }),
+  setGroupCollapsed: (id: string, collapsed: boolean) => invoke<string[]>("set_group_collapsed", { id, collapsed }),
+  // .tqc / .tqg (thorncue-spec#3, FORMAT.md 6)
+  importPieces: (paths: string[]) => invoke<PiecesResult>("import_pieces", { paths }),
+  pieceFileName: (piece: Piece) => invoke<string>("piece_file_name", piece),
+  exportPiece: (piece: Piece, path: string) => invoke<void>("export_piece", { ...piece, path }),
 };
+
+/** What to export: some cues (.tqc) or one group (.tqg). */
+export type Piece = { ids: string[]; group?: null } | { ids?: null; group: string };
+
+export interface PiecesResult {
+  show: ShowView;
+  added: { file: string; kind: "cues" | "group"; cues: number; group: string | null }[];
+  problems: string[];
+}
+
+export const PIECE_EXTENSIONS = ["tqc", "tqg"];
 
 export const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "flac", "m4a", "aiff", "aif"];
 

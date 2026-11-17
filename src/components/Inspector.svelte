@@ -3,7 +3,7 @@
   // the bind* handlers). Every change goes straight to Rust, which validates, autosaves and
   // tells the engine; a playing cue's volume follows the slider live.
   // Hide and height are a per-viewer convenience, remembered in localStorage.
-  import type { Cue, CuePatch } from "../lib/api";
+  import type { Cue, CuePatch, Group } from "../lib/api";
   import { syncValue } from "../lib/sync";
   import Trim from "./Trim.svelte";
 
@@ -14,6 +14,11 @@
     onDuplicate,
     onReplace,
     onDelete,
+    groups = [],
+    onSetGroup,
+    exportCount = 1,
+    onExport,
+    hidden = $bindable(),
   }: {
     cue: Cue | null;
     index: number;
@@ -21,6 +26,14 @@
     onDuplicate: (id: string) => void;
     onReplace: (id: string) => void;
     onDelete: (cue: Cue, index: number) => void;
+    groups?: Group[];
+    /** The Group field (thorncue-spec#2): join puts the cue at the group's end. */
+    onSetGroup?: (id: string, group: string | null) => void;
+    /** Export cue (.tqc): the shift-selected range when there is one, else this cue. */
+    exportCount?: number;
+    onExport?: () => void;
+    /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
+    hidden?: boolean;
   } = $props();
 
   const KEY = "thorncue.inspector";
@@ -34,7 +47,7 @@
     return { hidden: false, height: null };
   }
   const saved = load();
-  let hidden = $state(saved.hidden);
+  hidden = saved.hidden;
   let height = $state<number | null>(saved.height);
   let resizing = $state(false);
 
@@ -46,7 +59,8 @@
     }
   }
 
-  function toggle() {
+  /** The one show/hide: the bar's chevron, the header's Inspector button and `\` all use it. */
+  export function toggle() {
     hidden = !hidden;
     remember();
   }
@@ -130,6 +144,10 @@
     <h2 class="inspector__title" id="insp-title">{cue ? `Q${index + 1} ${cue.name}` : "Inspector"}</h2>
     {#if cue}
       <button type="button" class="btn" onclick={() => onDuplicate(cue.id)}>Duplicate</button>
+      {#if onExport}
+        <button type="button" class="btn" title="Save as a .tqc file, audio and edits included, to import into another show"
+          onclick={onExport}>{exportCount > 1 ? `Export ${exportCount} cues` : "Export cue"}</button>
+      {/if}
       {#if audio}<button type="button" class="btn" onclick={() => onReplace(cue.id)}>Replace file</button>{/if}
       <button type="button" class="btn btn--danger" onclick={() => onDelete(cue, index)}>Delete</button>
     {/if}
@@ -145,6 +163,16 @@
             <input type="text" id="f-name" maxlength="100" autocomplete="off" use:syncValue={cue.name}
               oninput={(e) => name(e.currentTarget)} />
           </div>
+          {#if groups.length}
+            <div class="field">
+              <label for="f-group">Group</label>
+              <select id="f-group" value={cue.group ?? ""}
+                onchange={(e) => onSetGroup?.(cue.id, e.currentTarget.value || null)}>
+                <option value="">No group</option>
+                {#each groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
+              </select>
+            </div>
+          {/if}
           {#if audio}
             <div class="field">
               <label for="f-vol">Volume (%)</label>

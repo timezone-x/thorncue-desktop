@@ -388,7 +388,111 @@ kbd {
 .cue-row.is-inspected .c-name { text-decoration: underline; text-decoration-color: var(--text-muted); text-underline-offset: 4px; }
 .cue-row .c-state.is-missing { color: var(--warning-text); }
 .cue-row.is-dragging { opacity: 0.4; }
-.cue-row.is-drop-target td { border-top: 2px solid var(--select-line); }
+.cue-row.is-drop-before td { box-shadow: inset 0 2px 0 var(--select-line); }
+.cue-row.is-drop-after td { box-shadow: inset 0 -2px 0 var(--select-line); }
+.cue-row.is-selected { background: var(--select-wash); }
+.cue-toolbar__selected { color: var(--text-muted); }
+.cue-table--head { position: sticky; top: 0; z-index: 5; }
+
+/* ---- Cue groups (thorncue-spec#2), as the web: btop-style panels. A thin rounded outline in
+   the group's colour, the title on the top edge, the count on the right of the same edge.
+   Colour is the user's label only; status is always words (Playing Q4, 3 of 8 played). ---- */
+
+.cue-group {
+  --group-color: var(--select-line);  /* replaced inline by the group's own colour */
+  --group-head: 28px;
+  position: relative;
+  margin: 6px 0;
+}
+/* The outline: from the middle of the title bar to the bottom of the last cue. Drawn over the
+   rows (which keep their full-width fills) and never catches the pointer. */
+.cue-group::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--group-head) / 2) 0 0 0;
+  border: 1px solid var(--group-color);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 2;
+}
+.cue-group__head {
+  position: relative; z-index: 3;
+  display: flex; align-items: center; gap: 0;
+  height: var(--group-head);
+  padding: 0 10px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+/* Title, count and Edit are chips that cut the line, like btop's box titles. */
+.cue-group__toggle,
+.cue-group__summary,
+.cue-group__edit {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 22px;
+  padding: 0 6px;
+  background: var(--bg);
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  color: var(--text);
+  white-space: nowrap;
+}
+.cue-group__toggle { cursor: pointer; font-weight: 600; min-width: 0; max-width: 60%; }
+.cue-group__name { overflow: hidden; text-overflow: ellipsis; }
+.cue-group__chev {
+  flex: none;
+  width: 0; height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--group-color);
+  transition: transform var(--dur);
+}
+.cue-group.is-collapsed .cue-group__chev { transform: rotate(-90deg); }
+.cue-group__fill { flex: 1 1 auto; }
+.cue-group__summary { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cue-group__edit { color: var(--text-muted); cursor: pointer; margin-left: 2px; }
+.cue-group__edit:hover, .cue-group__toggle:hover { color: var(--text); background: var(--control-hover); }
+.cue-group.is-running .cue-group__summary { color: var(--go-text); }
+.cue-group.is-standby .cue-group__toggle::before { content: "▶"; color: var(--select-line); font-weight: 400; }
+.cue-group.is-standby .cue-group__summary { color: var(--select-line); }
+.cue-group__body {
+  /* Clip row fills to the panel's rounded bottom corners. */
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+.cue-group__body .cue-row:last-child td { border-bottom: 0; }
+/* Collapsed: just the title edge and a closed bottom edge. */
+.cue-group.is-collapsed { padding-bottom: 6px; }
+.cue-group.is-dragging { opacity: 0.4; }
+.cue-group.is-drop-before { box-shadow: 0 -2px 0 var(--select-line); }
+.cue-group.is-drop-after { box-shadow: 0 2px 0 var(--select-line); }
+.cue-group__head.is-drop-after { box-shadow: inset 0 -2px 0 var(--select-line); }
+
+/* Group dialog: colour swatches and the custom colour wheel. */
+.swatches { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.swatches legend { padding: 0; margin-bottom: 6px; }
+.swatches__row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.swatch {
+  position: relative;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--swatch);
+  cursor: pointer;
+}
+.swatch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.swatch:has(input:checked) { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+.swatch:has(input:focus-visible) { outline: 2px solid var(--select-line); outline-offset: 4px; }
+.swatch-custom { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.swatch-custom input {
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--border-control); border-radius: 50%;
+  background: none; cursor: pointer;
+}
+.swatch-custom input::-webkit-color-swatch-wrapper { padding: 2px; }
+.swatch-custom input::-webkit-color-swatch { border: 0; border-radius: 50%; }
+.swatch-custom.is-checked input { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+.dialog-foot__spacer { flex: 1 1 auto; }
 .cue-kind { color: var(--text-muted); }
 .cue-list-empty { padding: 32px 16px; color: var(--text-muted); }
 .cue-list-empty p + p { margin-top: 8px; }
