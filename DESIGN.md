@@ -82,7 +82,7 @@ Status is always a word or glyph plus colour (Running, Paused, Ready), never col
 - `prefers-reduced-motion` disables transitions.
 
 ## Layout (show page)
-Header → transport → now-playing strip (always present, so nothing shifts when a cue starts) → toolbar → cue list → inspector for the selected cue. The inspector can be hidden for running the show.
+Header → transport → now-playing strip (always present, so nothing shifts when a cue starts) → toolbar → cue list → inspector for the selected cue. The inspector starts closed whenever a show opens (as the web), so the cue list has the room for running; open it with the Inspector button or `\`. Its height is remembered.
 
 ## Signature
 None. It's a work tool.

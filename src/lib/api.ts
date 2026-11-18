@@ -9,6 +9,10 @@ export interface Settings {
   theme_mode: ThemeMode;
   go_lockout_ms: number;
   stop_fade: number;
+  /** The first-run welcome card has been answered. */
+  welcome_seen: boolean;
+  /** The library id of the sample show, once it has been opened. */
+  sample_show_id: string | null;
 }
 
 export interface ShowSummary {
@@ -108,6 +112,10 @@ export const api = {
   closeShow: () => invoke<void>("close_show"),
   /** After an unclean exit: the last show, reopened at its standby (nothing plays). */
   recoverSession: () => invoke<{ show: ShowView; message: string } | null>("recover_session"),
+  /** Sample show (thorncue-spec#11): each returns the sample's library id; the page opens it. */
+  openSample: () => invoke<string>("open_sample"),
+  resetSample: () => invoke<string>("reset_sample"),
+  skipWelcome: () => invoke<Settings>("skip_welcome"),
 };
 
 // ---- Engine (crates/engine/src/state.rs) ----
@@ -289,6 +297,9 @@ export const editApi = {
   importPieces: (paths: string[]) => invoke<PiecesResult>("import_pieces", { paths }),
   pieceFileName: (piece: Piece) => invoke<string>("piece_file_name", piece),
   exportPiece: (piece: Piece, path: string) => invoke<void>("export_piece", { ...piece, path }),
+  cueWavFileName: (id: string) => invoke<string>("cue_wav_file_name", { id }),
+  /** The cue's audio as it plays (trims, cuts, volume, fades; one pass if it loops), as WAV. */
+  exportCueWav: (id: string, path: string) => invoke<void>("export_cue_wav", { id, path }),
 };
 
 /** What to export: some cues (.tqc) or one group (.tqg). */

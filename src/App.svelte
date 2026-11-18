@@ -108,7 +108,7 @@
   {:else if screen === "web"}
     <WebShows onOpen={openShow} onSettings={() => go("settings")} />
   {:else}
-    <Settings />
+    <Settings onOpen={openShow} />
   {/if}
 {/if}
 

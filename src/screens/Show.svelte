@@ -65,7 +65,7 @@
   let saveMessage = $state("");
   let confirmDelete = $state<{ cue: Cue; index: number } | null>(null);
   let inspector = $state<ReturnType<typeof Inspector>>();
-  let inspectorHidden = $state(false);
+  let inspectorHidden = $state(true);
 
   // ---- Groups (thorncue-spec#2; web static/app.js "Groups") ----
   // Rust owns membership and order; collapse is per machine (local.json); played counts are
@@ -488,6 +488,19 @@
     }
   }
 
+  /** Export WAV: one cue's audio as it plays (web inspector "Export WAV"). */
+  async function exportWav(id: string) {
+    try {
+      const name = await editApi.cueWavFileName(id);
+      const path = await saveDialog({ title: "Export WAV", defaultPath: name, filters: [{ name: "WAV audio", extensions: ["wav"] }] });
+      if (!path) return;
+      await editApi.exportCueWav(id, path);
+      showToast(`Exported to ${path.split(/[\\/]/).pop()}.`);
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
+
   /** As the web's exportCueIds: the shift-selected range, else the inspected cue. */
   const exportIds = $derived(selected.size > 1 ? cues.filter((c) => selected.has(c.id)).map((c) => c.id) : inspected ? [inspected.id] : []);
 
@@ -861,9 +874,9 @@
     {/if}
   </main>
 
-  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
+  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} showId={show.id} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
     onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
-    exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })}
+    exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })} onExportWav={exportWav}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>

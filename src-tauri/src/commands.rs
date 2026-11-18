@@ -410,3 +410,75 @@ pub fn set_master(volume: f64, state: State<'_, AppState>) -> Result<(), String>
 pub fn restart_engine(state: State<'_, AppState>) -> Result<(), String> {
     send(&state, Command::RestartAudio)
 }
+
+// ---------------------------------------------------------------------------
+// Sample show and first-run welcome (thorncue-spec#11)
+// ---------------------------------------------------------------------------
+
+/// The welcome card's Skip: don't show it again.
+#[tauri::command]
+pub fn skip_welcome(state: State<'_, AppState>) -> Result<Settings, String> {
+    let mut s = state.settings.lock().map_err(|_| busy())?;
+    let mut next = s.clone();
+    next.welcome_seen = true;
+    save_settings(&state, &next)?;
+    *s = next;
+    Ok(s.for_ui())
+}
+
+/// Run a sample-show action off the main thread (it imports ~4 MB), then save the settings it
+/// changed. Returns the sample's library id.
+async fn sample_action(
+    app: AppHandle,
+    what: &'static str,
+    f: fn(&crate::library::Library, &mut Settings, &std::path::Path) -> anyhow::Result<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut s = state.settings.lock().map_err(|_| busy())?.clone();
+        let id = f(&state.library, &mut s, &state.tmp_dir).map_err(|e| {
+            tracing::error!("{what} the sample show: {e:#}");
+            "Couldn't set up the sample show. Check there is free disk space.".to_string()
+        })?;
+        let mut live = state.settings.lock().map_err(|_| busy())?;
+        let mut next = live.clone();
+        next.welcome_seen = s.welcome_seen;
+        next.sample_show_id = s.sample_show_id;
+        save_settings(&state, &next)?;
+        *live = next;
+        Ok(id)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("sample show task failed: {e}");
+        "That stopped unexpectedly. Try again.".to_string()
+    })?
+}
+
+/// The sample show's id, importing a fresh copy if it isn't in the library. The page opens it.
+#[tauri::command]
+pub async fn open_sample(app: AppHandle) -> Result<String, String> {
+    sample_action(app, "opening", |lib, s, tmp| {
+        crate::sample::open(lib, s, tmp).map(|(id, _)| id)
+    })
+    .await
+}
+
+/// Replace the sample show with a fresh copy (the page asks first). Refused while it's open.
+#[tauri::command]
+pub async fn reset_sample(app: AppHandle) -> Result<String, String> {
+    {
+        let state = app.state::<AppState>();
+        let sample = state
+            .settings
+            .lock()
+            .map_err(|_| busy())?
+            .sample_show_id
+            .clone();
+        let open = state.open_show.lock().map_err(|_| busy())?;
+        if sample.is_some() && open.as_ref().map(|o| &o.id) == sample.as_ref() {
+            return Err("Close the sample show before resetting it.".into());
+        }
+    }
+    sample_action(app, "resetting", crate::sample::reset).await
+}
