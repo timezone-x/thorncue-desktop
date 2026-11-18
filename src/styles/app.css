@@ -143,6 +143,18 @@ label { display: block; margin-bottom: 4px; color: var(--text-muted); }
 
 .empty { padding: 32px 0; color: var(--text-muted); }
 
+/* First-run welcome (thorncue-web .welcome-card) and plain rows of buttons. */
+.welcome-card {
+  margin-bottom: 24px;
+  padding: 16px;
+  border: 1px solid var(--select-line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.welcome-card h2 { margin-bottom: 8px; }
+.welcome-card p { max-width: 64ch; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+
 /* ---- Tables ---- */
 
 .table-wrap { overflow-x: auto; }

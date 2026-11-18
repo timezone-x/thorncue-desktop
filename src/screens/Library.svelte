@@ -12,6 +12,9 @@
 
   let shows = $state<ShowSummary[] | null>(null);
   let confirmDelete = $state<ShowSummary | null>(null);
+  /** The first-run welcome card (thorncue-web templates/new_shows_list.html). */
+  let welcome = $state(false);
+  let openingSample = $state(false);
 
   async function refresh() {
     try {
@@ -25,7 +28,30 @@
   onMount(() => {
     void initImporter(() => refresh());
     void refresh();
+    api.getSettings().then((s) => (welcome = !s.welcome_seen), () => {});
   });
+
+  async function openSample() {
+    openingSample = true;
+    try {
+      const id = await api.openSample();
+      welcome = false;
+      onOpen(id);
+    } catch (e) {
+      showToast(errorText(e), true);
+    } finally {
+      openingSample = false;
+    }
+  }
+
+  async function skipWelcome() {
+    welcome = false;
+    try {
+      await api.skipWelcome();
+    } catch (e) {
+      showToast(errorText(e), true);
+    }
+  }
 
   async function pickFile() {
     const picked = await openDialog({
@@ -90,6 +116,21 @@
     <button type="button" class="btn" onclick={onWeb}>Import from the web…</button>
     <button type="button" class="btn btn--primary" onclick={pickFile}>Import file…</button>
   </div>
+
+  {#if welcome}
+    <section class="welcome-card" aria-labelledby="welcome-heading">
+      <h2 id="welcome-heading">Welcome to ThornCue</h2>
+      <p>The sample show is a short cue list that teaches you as you play it: each cue's name tells you what
+        to press and what to look for. It becomes one of your shows, so you can edit it, rename it or delete
+        it.</p>
+      <div class="button-row">
+        <button type="button" class="btn btn--primary" disabled={openingSample} onclick={openSample}>
+          {openingSample ? "Opening…" : "Open the sample show"}</button>
+        <button type="button" class="btn" disabled={openingSample} onclick={skipWelcome}>Skip</button>
+      </div>
+      <p class="hint">You can open it later from Settings.</p>
+    </section>
+  {/if}
 
   {#if shows === null}
     <p class="empty">Loading your shows…</p>

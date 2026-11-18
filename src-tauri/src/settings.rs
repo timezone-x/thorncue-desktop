@@ -35,6 +35,10 @@ pub struct Settings {
     pub audition_output: engine::AuditionOutput,
     /// Linear amplitude 0..=1, separate from the master.
     pub audition_volume: f64,
+    /// The first-run welcome card has been answered (Open the sample show or Skip).
+    pub welcome_seen: bool,
+    /// The library id of the sample show, so a renamed sample still counts (sample.rs).
+    pub sample_show_id: Option<String>,
     /// Fields written by a newer ThornCue are kept on save.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -52,6 +56,8 @@ impl Default for Settings {
             show_output: Default::default(),
             audition_output: Default::default(),
             audition_volume: 1.0,
+            welcome_seen: false,
+            sample_show_id: None,
             extra: Default::default(),
         }
     }

@@ -197,6 +197,30 @@ impl Library {
         origin: &WebOrigin,
         on_progress: &mut dyn FnMut(Progress),
     ) -> std::result::Result<(Manifest, Vec<Warning>), ReplaceError> {
+        self.replace_with_file(id, file, on_progress, |old_local, manifest| LocalState {
+            standby_index: old_local.standby_index.min(manifest.cues.len()),
+            last_opened: old_local.last_opened,
+            imported_at: Some(tqs::now_rfc3339()),
+            imported_revision: revision_of(origin, manifest),
+            modified_since_import: false,
+            web_server: Some(origin.server.clone()),
+            web_code: Some(origin.code.clone()),
+            // Same group ids after an update from the web: stay collapsed (unknown ids are ignored).
+            collapsed_groups: old_local.collapsed_groups,
+            extra: old_local.extra,
+        })
+    }
+
+    /// Replace show `id`'s content with the `.tqs` at `file`, keeping its id. `make_local` gets
+    /// the old client state and the new manifest and returns the new client state. The old
+    /// content goes to the OS trash. Nothing changes if the package is refused.
+    pub fn replace_with_file(
+        &self,
+        id: &str,
+        file: &Path,
+        on_progress: &mut dyn FnMut(Progress),
+        make_local: impl FnOnce(LocalState, &Manifest) -> LocalState,
+    ) -> std::result::Result<(Manifest, Vec<Warning>), ReplaceError> {
         let live = self.show_dir(id).map_err(|_| ReplaceError::NoSuchShow)?;
         if !live.is_dir() {
             return Err(ReplaceError::NoSuchShow);
@@ -223,18 +247,7 @@ impl Library {
             return Err(ReplaceError::Disk);
         }
         crate::fsutil::sync_dir(&self.root);
-        let local = LocalState {
-            standby_index: old_local.standby_index.min(manifest.cues.len()),
-            last_opened: old_local.last_opened,
-            imported_at: Some(tqs::now_rfc3339()),
-            imported_revision: revision_of(origin, &manifest),
-            modified_since_import: false,
-            web_server: Some(origin.server.clone()),
-            web_code: Some(origin.code.clone()),
-            // Same group ids after an update from the web: stay collapsed (unknown ids are ignored).
-            collapsed_groups: old_local.collapsed_groups,
-            extra: old_local.extra,
-        };
+        let local = make_local(old_local, &manifest);
         if let Err(e) = write_local(&live, &local) {
             tracing::warn!("couldn't write local.json for {id}: {e:#}");
         }

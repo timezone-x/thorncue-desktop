@@ -2,7 +2,10 @@
   import { errorText, type ThemeFamily, type ThemeMode } from "../lib/api";
   import { FAMILIES, setTheme, theme } from "../lib/theme.svelte";
   import { showToast } from "../lib/toast.svelte";
+
+  let { onOpen }: { onOpen: (id: string) => void } = $props();
   import AudioSettings from "../components/AudioSettings.svelte";
+  import SampleSettings from "../components/SampleSettings.svelte";
   import WebSettings from "../components/WebSettings.svelte";
 
   const MODES: { id: ThemeMode; label: string }[] = [
@@ -68,6 +71,8 @@
   </section>
 
   <AudioSettings />
+
+  <SampleSettings {onOpen} />
 
   <WebSettings />
 </main>

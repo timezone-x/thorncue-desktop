@@ -7,6 +7,7 @@ mod editing;
 mod fsutil;
 mod library;
 mod playback;
+mod sample;
 mod saver;
 mod session;
 mod settings;
@@ -120,6 +121,9 @@ pub fn run() {
             commands::set_outputs,
             commands::set_audition_volume,
             commands::refresh_devices,
+            commands::skip_welcome,
+            commands::open_sample,
+            commands::reset_sample,
             web_cmds::web_connection,
             web_cmds::web_connect,
             web_cmds::web_check,

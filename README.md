@@ -6,6 +6,12 @@ ThornCue desktop is what runs in the booth. [ThornCue Web](https://github.com/ti
 
 Licence: GPL-3.0 (see `LICENSE`).
 
+## Sample show
+
+The first time you open ThornCue, the Library offers **Open the sample show** or **Skip**. Either answer is remembered, so the card shows once. **Settings → Sample show** has **Open the sample show** and **Reset the sample show** (which asks first, then replaces it with a fresh copy).
+
+The sample show is a short cue list that teaches by its cue names: what to press and what each cue does (fades, a trim and cut, a loop, an auto-continue chain, silence, a fade-out, two groups). It's an ordinary show in your library named "Sample show": rename it, edit it or delete it. Open goes back to it, even renamed; if you've deleted it, Open imports a new one. It comes from `src-tauri/sample/sample-show.tqs`, a copy of thorncue-spec's `samples/sample-show.tqs` (CC0 audio; credits there).
+
 ## Opening an unsigned build
 
 Release builds aren't signed yet, so your computer will warn you the first time.
