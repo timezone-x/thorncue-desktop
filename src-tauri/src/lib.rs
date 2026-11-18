@@ -147,6 +147,8 @@ pub fn run() {
             edit_cmds::import_pieces,
             edit_cmds::piece_file_name,
             edit_cmds::export_piece,
+            edit_cmds::cue_wav_file_name,
+            edit_cmds::export_cue_wav,
             edit_cmds::add_audio_cues,
             edit_cmds::replace_cue_file,
             edit_cmds::new_show,

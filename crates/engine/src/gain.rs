@@ -147,13 +147,18 @@ struct CueGain {
 /// Where the scheduled fade-out starts, if there is one. FORMAT.md 2.5.4: if fade-in and
 /// fade-out overlap, the fade-out starts where the fade-in ends (web scheduleGain:
 /// max(fade_in, length - fade_out)); a looping cue has no fade-out.
-fn fade_out_start(fade_in: f64, fade_out: f64, length: f64, looping: bool) -> Option<f64> {
+pub(crate) fn fade_out_start(
+    fade_in: f64,
+    fade_out: f64,
+    length: f64,
+    looping: bool,
+) -> Option<f64> {
     (!looping && fade_out > 0.0).then(|| (length - fade_out).max(fade_in.min(length)))
 }
 
 /// The scheduled envelope (0..=1) at `t` seconds into the edited audio. The one definition of
 /// a cue's fades: playback (`CueGain`) and the trim editor's gain line (`fade_curve`) both use it.
-fn envelope(t: f64, fade_in: f64, fade_out_start: Option<f64>, length: f64) -> f64 {
+pub(crate) fn envelope(t: f64, fade_in: f64, fade_out_start: Option<f64>, length: f64) -> f64 {
     if let Some(fs) = fade_out_start
         && t >= fs
     {

@@ -18,6 +18,7 @@
     onSetGroup,
     exportCount = 1,
     onExport,
+    onExportWav,
     hidden = $bindable(),
   }: {
     cue: Cue | null;
@@ -32,6 +33,8 @@
     /** Export cue (.tqc): the shift-selected range when there is one, else this cue. */
     exportCount?: number;
     onExport?: () => void;
+    /** Export WAV (web inspector): this cue's audio as it plays. Resolves when done or cancelled. */
+    onExportWav?: (id: string) => Promise<void>;
     /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
     hidden?: boolean;
   } = $props();
@@ -92,6 +95,16 @@
   }
 
   const audio = $derived(cue?.type === "audio");
+  let exportingWav = $state(false);
+  async function exportWav(id: string) {
+    if (!onExportWav || exportingWav) return;
+    exportingWav = true;
+    try {
+      await onExportWav(id);
+    } finally {
+      exportingWav = false;
+    }
+  }
   let trim = $state<ReturnType<typeof Trim>>();
   /** A fade handle being dragged on the waveform: the fields follow it live. */
   let draftFades = $state<{ fade_in: number; fade_out: number } | null>(null);
@@ -144,6 +157,10 @@
     <h2 class="inspector__title" id="insp-title">{cue ? `Q${index + 1} ${cue.name}` : "Inspector"}</h2>
     {#if cue}
       <button type="button" class="btn" onclick={() => onDuplicate(cue.id)}>Duplicate</button>
+      {#if audio && onExportWav}
+        <button type="button" class="btn" title="Save the audio as it plays: trims, cuts, volume and fades applied"
+          disabled={exportingWav} onclick={() => exportWav(cue.id)}>{exportingWav ? "Exporting…" : "Export WAV"}</button>
+      {/if}
       {#if onExport}
         <button type="button" class="btn" title="Save as a .tqc file, audio and edits included, to import into another show"
           onclick={onExport}>{exportCount > 1 ? `Export ${exportCount} cues` : "Export cue"}</button>

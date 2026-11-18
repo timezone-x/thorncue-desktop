@@ -297,6 +297,9 @@ export const editApi = {
   importPieces: (paths: string[]) => invoke<PiecesResult>("import_pieces", { paths }),
   pieceFileName: (piece: Piece) => invoke<string>("piece_file_name", piece),
   exportPiece: (piece: Piece, path: string) => invoke<void>("export_piece", { ...piece, path }),
+  cueWavFileName: (id: string) => invoke<string>("cue_wav_file_name", { id }),
+  /** The cue's audio as it plays (trims, cuts, volume, fades; one pass if it loops), as WAV. */
+  exportCueWav: (id: string, path: string) => invoke<void>("export_cue_wav", { id, path }),
 };
 
 /** What to export: some cues (.tqc) or one group (.tqg). */

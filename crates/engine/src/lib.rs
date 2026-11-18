@@ -6,6 +6,7 @@
 mod backend;
 mod core;
 mod edit;
+mod export;
 mod gain;
 mod outputs;
 mod peaks;
@@ -19,6 +20,7 @@ pub use backend::{
 };
 pub use core::{AuditionOpener, Command, Core, ManagerFactory, Options, OutputSetup};
 pub use edit::kept_segments;
+pub use export::{CueRender, cue_wav};
 pub use gain::{FadeShape, fade_curve};
 pub use kira;
 pub use outputs::{
