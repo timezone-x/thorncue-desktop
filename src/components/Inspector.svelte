@@ -2,7 +2,8 @@
   // The inspector for one cue (reference/web/show.html "Inspector", app.js renderInspector and
   // the bind* handlers). Every change goes straight to Rust, which validates, autosaves and
   // tells the engine; a playing cue's volume follows the slider live.
-  // Hide and height are a per-viewer convenience, remembered in localStorage.
+  // It starts closed whenever a show opens, as the web (static/app.js "Start"); its height is a
+  // per-viewer convenience, remembered in localStorage.
   import type { Cue, CuePatch, Group } from "../lib/api";
   import { syncValue } from "../lib/sync";
   import Trim from "./Trim.svelte";
@@ -19,6 +20,7 @@
     exportCount = 1,
     onExport,
     onExportWav,
+    showId,
     hidden = $bindable(),
   }: {
     cue: Cue | null;
@@ -35,28 +37,35 @@
     onExport?: () => void;
     /** Export WAV (web inspector): this cue's audio as it plays. Resolves when done or cancelled. */
     onExportWav?: (id: string) => Promise<void>;
+    /** The open show: the inspector closes whenever this changes (a show opened). */
+    showId: string;
     /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
     hidden?: boolean;
   } = $props();
 
   const KEY = "thorncue.inspector";
-  function load(): { hidden: boolean; height: number | null } {
+  function loadHeight(): number | null {
     try {
       const v = JSON.parse(localStorage.getItem(KEY) ?? "null");
-      if (v && typeof v.hidden === "boolean") return { hidden: v.hidden, height: typeof v.height === "number" ? v.height : null };
+      if (v && typeof v.height === "number") return v.height;
     } catch {
-      /* storage unavailable or damaged: defaults */
+      /* storage unavailable or damaged: default height */
     }
-    return { hidden: false, height: null };
+    return null;
   }
-  const saved = load();
-  hidden = saved.hidden;
-  let height = $state<number | null>(saved.height);
+  let height = $state<number | null>(loadHeight());
   let resizing = $state(false);
+
+  // Closed when a show opens: on first draw, after a reload, and when the Show screen switches
+  // to another show without being redrawn (Duplicate show).
+  $effect.pre(() => {
+    void showId;
+    hidden = true;
+  });
 
   function remember() {
     try {
-      localStorage.setItem(KEY, JSON.stringify({ hidden, height }));
+      localStorage.setItem(KEY, JSON.stringify({ height }));
     } catch {
       /* not remembered this time */
     }

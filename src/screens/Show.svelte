@@ -65,7 +65,7 @@
   let saveMessage = $state("");
   let confirmDelete = $state<{ cue: Cue; index: number } | null>(null);
   let inspector = $state<ReturnType<typeof Inspector>>();
-  let inspectorHidden = $state(false);
+  let inspectorHidden = $state(true);
 
   // ---- Groups (thorncue-spec#2; web static/app.js "Groups") ----
   // Rust owns membership and order; collapse is per machine (local.json); played counts are
@@ -874,7 +874,7 @@
     {/if}
   </main>
 
-  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
+  <Inspector bind:this={inspector} bind:hidden={inspectorHidden} showId={show.id} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
     onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
     exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })} onExportWav={exportWav}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
