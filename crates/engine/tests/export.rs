@@ -57,8 +57,10 @@ fn parse(b: &[u8]) -> Wav {
     assert_eq!(&b[36..40], b"data");
     assert_eq!(u32at(40) as usize, b.len() - 44);
     let samples = b[44..]
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| i16::from_le_bytes(c))
         .collect();
     Wav {
         channels,
