@@ -6,10 +6,12 @@
   import { listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
+    AUDIO_DEFAULTS,
     AUDIO_EXTENSIONS,
     PIECE_EXTENSIONS,
     editApi,
     errorText,
+    exportApi,
     transport,
     type Cue,
     type CuePatch,
@@ -28,6 +30,8 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import OutputsBar from "../components/OutputsBar.svelte";
   import Inspector from "../components/Inspector.svelte";
+  import AudioExportDialog from "../components/AudioExportDialog.svelte";
+  import { audioJob, progressText, runAudioExport } from "../lib/audioExport.svelte";
 
   let {
     show,
@@ -488,21 +492,39 @@
     }
   }
 
-  /** Export WAV: one cue's audio as it plays (web inspector "Export WAV"). */
-  async function exportWav(id: string) {
+  /** Export ▾ (thorncue-spec#17): .tqc as before; WAV/MP3 for one cue, or for a range a zip with
+   * the Export audio dialog's defaults, without opening it (web exportAs). */
+  async function exportAs(kind: "tqc" | "wav" | "mp3") {
+    const ids = exportIds;
+    if (!ids.length) return;
+    if (kind === "tqc") return exportPiece({ ids });
     try {
-      const name = await editApi.cueWavFileName(id);
-      const path = await saveDialog({ title: "Export WAV", defaultPath: name, filters: [{ name: "WAV audio", extensions: ["wav"] }] });
+      if (ids.length > 1) {
+        showToast(`Exporting ${plural(ids.length, "cue")} as ${kind.toUpperCase()}…`);
+        const r = await runAudioExport(null, { ...AUDIO_DEFAULTS, cues: { kind: "selected", value: ids }, format: kind });
+        if (r && r !== "cancelled") showToast(`Exported ${plural(r.files, "file")} to ${r.file_name}.`);
+        return;
+      }
+      const name = await exportApi.cueFileName(ids[0], kind);
+      const path = await saveDialog({ title: `Export ${kind.toUpperCase()}`, defaultPath: name, filters: [{ name: `${kind.toUpperCase()} audio`, extensions: [kind] }] });
       if (!path) return;
-      await editApi.exportCueWav(id, path);
+      singleExport = "Exporting…";
+      await exportApi.exportCue(ids[0], kind, path);
       showToast(`Exported to ${path.split(/[\\/]/).pop()}.`);
     } catch (e) {
       showToast(errorText(e), true);
+    } finally {
+      singleExport = "";
     }
   }
 
   /** As the web's exportCueIds: the shift-selected range, else the inspected cue. */
   const exportIds = $derived(selected.size > 1 ? cues.filter((c) => selected.has(c.id)).map((c) => c.id) : inspected ? [inspected.id] : []);
+  // ---- Export audio… (the show's cues as a zip) ----
+  let audioDialog = $state(false);
+  let singleExport = $state("");
+  const exportBusy = $derived(singleExport || (audioJob.running ? progressText(audioJob.progress) : ""));
+  const exportAudioCount = $derived(exportIds.filter((id) => { const c = cues.find((x) => x.id === id); return c?.type === "audio" && !!c.asset; }).length);
 
   // Keep the standby row in view, instantly (DESIGN.md: no smooth scroll during a show).
   $effect(() => {
@@ -743,7 +765,10 @@
     <button type="button" class="btn" aria-controls="inspector" aria-pressed={!inspectorHidden} aria-keyshortcuts={"\\"}
       title={inspectorHidden ? "Show inspector (\\)" : "Hide inspector (\\)"} onclick={() => inspector?.toggle()}>Inspector</button>
     <button type="button" class="btn" aria-keyshortcuts="?" onclick={() => shortcutsDialog.showModal()}>Shortcuts</button>
-    <button type="button" class="btn" onclick={exportShow}>Export .tqs</button>
+    <button type="button" class="btn" onclick={exportShow}
+      title="Save the cue list and its audio as a .tqs file, for ThornCue Web or another computer">Export .tqs</button>
+    <button type="button" class="btn" aria-haspopup="dialog" disabled={audioJob.running} onclick={() => (audioDialog = true)}
+      title="Save the cues as audio files (WAV, MP3 or the originals) in a zip">{audioJob.running ? progressText(audioJob.progress) : "Export audio…"}</button>
     <button type="button" class="btn" onclick={duplicateShow}>Duplicate show</button>
   </header>
 
@@ -876,10 +901,15 @@
 
   <Inspector bind:this={inspector} bind:hidden={inspectorHidden} showId={show.id} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
     onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
-    exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })} onExportWav={exportWav}
+    exportCount={exportIds.length} {exportAudioCount} {exportBusy} onExport={exportAs}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
+
+{#if audioDialog}
+  <AudioExportDialog selection={cues.filter((c) => selected.has(c.id)).map((c) => c.id)}
+    currentGroup={inspected?.group ?? null} onClose={() => (audioDialog = false)} />
+{/if}
 
 {#if groupDialog}
   {@const d = groupDialog}

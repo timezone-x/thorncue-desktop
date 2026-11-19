@@ -173,3 +173,53 @@ fn run(
 pub fn stop_audio_export(state: State<'_, AppState>) {
     state.exports.stop();
 }
+
+/// What the Export audio dialog shows about a show: its cues (name, group, whether it has an
+/// audio file and of what kind) and groups. For the Library row too, where the show isn't open.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Outline {
+    pub name: String,
+    pub cues: Vec<OutlineCue>,
+    pub groups: Vec<tqs::Group>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OutlineCue {
+    pub id: String,
+    pub name: String,
+    pub group: Option<String>,
+    /// The original file's extension, lowercase, when it's an audio cue whose file is there.
+    pub audio_ext: Option<String>,
+}
+
+#[tauri::command]
+pub fn audio_export_outline(
+    show: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Outline, String> {
+    let (dir, m) = snapshot(&state, show.as_deref())?;
+    let cues = m
+        .cues
+        .iter()
+        .map(|c| OutlineCue {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            group: c.group.clone(),
+            audio_ext: (c.cue_type == tqs::CueType::Audio)
+                .then(|| c.asset.as_ref().and_then(|a| m.assets.get(a)))
+                .flatten()
+                .filter(|a| dir.join(&a.path).is_file())
+                .map(|a| {
+                    Path::new(&a.path)
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_default()
+                }),
+        })
+        .collect();
+    Ok(Outline {
+        name: m.show.name.clone(),
+        cues,
+        groups: m.groups.clone(),
+    })
+}

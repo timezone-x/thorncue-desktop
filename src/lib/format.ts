@@ -53,3 +53,15 @@ export function rowNotes(c: Cue): string {
   if (c.continue === "after_end") n.push("Auto-continue");
   return n.join(", ");
 }
+
+/** FORMAT.md 7.3's file-name rule, for the Export audio dialog's examples (web safeFileName;
+ * the files themselves are named by tqs::safe_name). */
+export function safeFileName(name: string, fallback = "", limit = 100): string {
+  // eslint-disable-next-line no-control-regex
+  let s = name.replace(/[\\/:*?"<>|\u0000-\u0008\u000e-\u001f\u007f]/g, "");
+  s = s.split(/\s+/).filter(Boolean).join(" ").replace(/^[ .]+|[ .]+$/g, "");
+  s = [...s].slice(0, limit).join("").replace(/^[ .]+|[ .]+$/g, "");
+  if (!s) s = fallback;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(s)) s += "_";
+  return s;
+}

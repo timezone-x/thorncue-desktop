@@ -19,8 +19,9 @@
     groups = [],
     onSetGroup,
     exportCount = 1,
+    exportAudioCount = 0,
+    exportBusy = "",
     onExport,
-    onExportWav,
     showId,
     hidden = $bindable(),
   }: {
@@ -33,11 +34,14 @@
     groups?: Group[];
     /** The Group field (thorncue-spec#2): join puts the cue at the group's end. */
     onSetGroup?: (id: string, group: string | null) => void;
-    /** Export cue (.tqc): the shift-selected range when there is one, else this cue. */
+    /** Export ▾ acts on the shift-selected range when there is one, else this cue. */
     exportCount?: number;
-    onExport?: () => void;
-    /** Export WAV (web inspector): this cue's audio as it plays. Resolves when done or cancelled. */
-    onExportWav?: (id: string) => Promise<void>;
+    /** How many of those are audio cues with a file (WAV and MP3 need one). */
+    exportAudioCount?: number;
+    /** Set while an export from here runs: the button says so ("Rendering 2 of 5"). */
+    exportBusy?: string;
+    /** Export ▾: Cue file (.tqc) · WAV · MP3 (thorncue-spec#17; web static/app.js "Export ▾"). */
+    onExport?: (kind: "tqc" | "wav" | "mp3") => void;
     /** The open show: the inspector closes whenever this changes (a show opened). */
     showId: string;
     /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
@@ -105,16 +109,58 @@
   }
 
   const audio = $derived(cue?.type === "audio");
-  let exportingWav = $state(false);
-  async function exportWav(id: string) {
-    if (!onExportWav || exportingWav) return;
-    exportingWav = true;
-    try {
-      await onExportWav(id);
-    } finally {
-      exportingWav = false;
+
+  // ---- Export ▾ (web updateExportMenu, setExportMenu) ----
+  let menuOpen = $state(false);
+  let menuButton = $state<HTMLButtonElement>();
+  let menuList = $state<HTMLElement>();
+  const noAudioWhy = $derived(
+    exportCount > 1 ? "None of these cues has audio (silence and fade-out cues have none). Export them as a cue file."
+      : audio ? "This cue has no audio file. Export it as a cue file."
+      : "Silence and fade-out cues have no audio. Export them as a cue file.",
+  );
+  const items = () => [...(menuList?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+  function openMenu(focusFirst = false) {
+    menuOpen = true;
+    if (focusFirst) requestAnimationFrame(() => items()[0]?.focus());
+  }
+  function closeMenu(refocus = false) {
+    menuOpen = false;
+    if (refocus) menuButton?.focus();
+  }
+  function choose(kind: "tqc" | "wav" | "mp3") {
+    if (kind !== "tqc" && !exportAudioCount) return;
+    closeMenu(true);
+    onExport?.(kind);
+  }
+  function menuKey(e: KeyboardEvent) {
+    const list = items();
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      list[(i + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length]?.focus();
+    } else if (e.key === "Escape" || e.key === "Tab") {
+      // Esc closes the menu and still reaches the Show screen: Stop all always wins.
+      closeMenu(e.key === "Escape");
+      return;
+    }
+    if (e.key === " " || e.key === "Enter" || e.key.startsWith("Arrow")) e.stopPropagation(); // not GO
+  }
+  function buttonKey(e: KeyboardEvent) {
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation(); // Space here opens the menu, not GO
+      openMenu(true);
     }
   }
+  $effect(() => {
+    if (!menuOpen) return;
+    const away = (e: PointerEvent) => {
+      if (!(e.target as HTMLElement).closest(".menu")) menuOpen = false;
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  });
   let trim = $state<ReturnType<typeof Trim>>();
   /** A fade handle being dragged on the waveform: the fields follow it live. */
   let draftFades = $state<{ fade_in: number; fade_out: number } | null>(null);
@@ -167,13 +213,30 @@
     <h2 class="inspector__title" id="insp-title">{cue ? `${cueNumber(index)} ${cue.name}` : "Inspector"}</h2>
     {#if cue}
       <button type="button" class="btn" onclick={() => onDuplicate(cue.id)}>Duplicate</button>
-      {#if audio && onExportWav}
-        <button type="button" class="btn" title="Save the audio as it plays: trims, cuts, volume and fades applied"
-          disabled={exportingWav} onclick={() => exportWav(cue.id)}>{exportingWav ? "Exporting…" : "Export WAV"}</button>
-      {/if}
       {#if onExport}
-        <button type="button" class="btn" title="Save as a .tqc file, audio and edits included, to import into another show"
-          onclick={onExport}>{exportCount > 1 ? `Export ${exportCount} cues` : "Export cue"}</button>
+        <span class="menu">
+          <button type="button" class="btn" bind:this={menuButton} aria-haspopup="menu" aria-expanded={menuOpen}
+            aria-controls="insp-export-menu" disabled={!!exportBusy} onkeydown={buttonKey}
+            onclick={() => (menuOpen ? closeMenu() : openMenu())}>
+            {exportBusy || (exportCount > 1 ? `Export ${exportCount} cues` : "Export")} <span aria-hidden="true">▾</span>
+          </button>
+          {#if menuOpen}
+            <span class="menu__list" id="insp-export-menu" role="menu" tabindex="-1" bind:this={menuList} onkeydown={menuKey}>
+              <button type="button" class="menu__item" role="menuitem" onclick={() => choose("tqc")}
+                title={exportCount > 1 ? `These ${exportCount} cues as a .tqc file, to import into another show` : "This cue as a .tqc file, to import into another show"}>
+                Cue file (.tqc)</button>
+              {#each ["wav", "mp3"] as const as kind (kind)}
+                <button type="button" class="menu__item" role="menuitem" aria-disabled={!exportAudioCount}
+                  title={!exportAudioCount ? noAudioWhy
+                    : exportCount > 1 ? `A zip of the ${exportAudioCount} audio cues as ${kind.toUpperCase()}, each as it plays: trims, cuts, fades and volume applied`
+                    : `The audio as it plays, as ${kind.toUpperCase()}: trims, cuts, fades and volume applied`}
+                  onclick={() => choose(kind)}>
+                  {kind.toUpperCase()}{#if !exportAudioCount}<small>no audio</small>{/if}
+                </button>
+              {/each}
+            </span>
+          {/if}
+        </span>
       {/if}
       {#if audio}<button type="button" class="btn" onclick={() => onReplace(cue.id)}>Replace file</button>{/if}
       <button type="button" class="btn btn--danger" onclick={() => onDelete(cue, index)}>Delete</button>

@@ -158,6 +158,7 @@ pub fn run() {
             export_cmds::audio_export_file_name,
             export_cmds::start_audio_export,
             export_cmds::stop_audio_export,
+            export_cmds::audio_export_outline,
             edit_cmds::add_audio_cues,
             edit_cmds::replace_cue_file,
             edit_cmds::new_show,
