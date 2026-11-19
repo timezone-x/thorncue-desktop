@@ -12,6 +12,23 @@ The first time you open ThornCue, the Library offers **Open the sample show** or
 
 The sample show is a short cue list that teaches by its cue names: what to press and what each cue does (fades, a trim and cut, a loop, an auto-continue chain, silence, a fade-out, two groups). It's an ordinary show in your library named "Sample show": rename it, edit it or delete it. Open goes back to it, even renamed; if you've deleted it, Open imports a new one. It comes from `src-tauri/sample/sample-show.tqs`, a copy of thorncue-spec's `samples/sample-show.tqs` (CC0 audio; credits there).
 
+## Export audio
+
+**Export audio…** (in the show header, or on a show's row in the Library) saves a zip of audio files, for a sound designer, a rehearsal recording or another playback system. It isn't a show file: use Export .tqs to move a show. The options (defaults in brackets):
+
+- **Cues:** [All], Selected (when cues are shift-selected), or one group.
+- **Apply edits** [on]: each cue as it plays (trims, cuts, fades, volume; loops once), as [WAV] or MP3 (320 kbps; lower for low sample rates). Off: the original files, byte for byte.
+- **Keep cue numbers in file names** [on]: `Q03 Storm.wav`, padded so they sort. Off: `Storm.wav`.
+- **Folder per group** [off]: `Act 1/Q03 Storm.wav`; cues not in a group stay at the top.
+- **The cue list** [on]: `cue-list.csv` with number, name, type, file, group, volume %, fades, pre-wait, loop, auto-continue and length.
+- **The .tqs** [off]: the whole show, so the zip can be imported again later (Import file… opens the show inside it).
+
+The line under the options says how many files and roughly how big. Exporting shows "Rendering 7 of 24" with **Stop**; **Hide** closes the dialog and keeps exporting, so GO and the keyboard work. Playback is never affected: the export decodes and encodes on its own thread.
+
+In the inspector, **Export ▾** saves one cue as a cue file (.tqc), WAV or MP3; with a shift-selected range, WAV and MP3 save one zip with the defaults above.
+
+Spec: `docs/format/FORMAT.md` section 7 (shared with ThornCue Web, which makes the same zip). MP3 encoding uses [LAME](https://lame.sourceforge.io) (LGPL), built in.
+
 ## Opening an unsigned build
 
 Release builds aren't signed yet, so your computer will warn you the first time.
