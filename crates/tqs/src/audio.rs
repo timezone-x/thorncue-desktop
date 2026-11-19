@@ -69,3 +69,56 @@ pub fn check_audio_file(path: &Path) -> std::result::Result<(), String> {
     }
     Ok(())
 }
+
+/// What the container says about an audio file, without decoding it: for estimates and for
+/// the cue list's length when originals are exported (FORMAT.md 7.3-7.4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioInfo {
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Seconds, when the container says (almost always; VBR MP3 without a header may not).
+    pub duration: Option<f64>,
+}
+
+pub fn audio_info(path: &Path) -> std::result::Result<AudioInfo, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("not a known audio format: {e}"))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or("no audio track")?;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or("no audio codec parameters")?;
+    let sample_rate = params.sample_rate.ok_or("no sample rate")?;
+    let channels = params
+        .channels
+        .as_ref()
+        .map(|c| c.count() as u16)
+        .unwrap_or(2)
+        .clamp(1, 2);
+    let duration = track.num_frames.map(|n| {
+        n as f64
+            / track.time_base.map_or(sample_rate as f64, |tb| {
+                tb.denom.get() as f64 / tb.numer.get() as f64
+            })
+    });
+    Ok(AudioInfo {
+        sample_rate,
+        channels,
+        duration,
+    })
+}

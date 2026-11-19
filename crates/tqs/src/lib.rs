@@ -14,7 +14,7 @@ mod time;
 mod write;
 mod zipcheck;
 
-pub use audio::check_audio_file;
+pub use audio::{AudioInfo, audio_info, check_audio_file};
 pub use audio_export::{
     AUDIO_EXPORT_COMMENT, AUDIO_EXPORT_FOR_CUES, AUDIO_EXPORT_IMPORTED, AUDIO_EXPORT_REFUSED,
     AudioExportOptions, AudioFormat, AudioZip, CSV_HEADER, CUE_LIST, CueChoice, Namer,

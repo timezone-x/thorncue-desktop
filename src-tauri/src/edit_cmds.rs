@@ -429,7 +429,7 @@ pub fn set_show_name(name: String, app: AppHandle) -> Result<EditResult, String>
     edit(&app, None, Edit::ShowName(name), vec![])
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| {
@@ -637,93 +637,4 @@ pub fn stop_audition(state: State<'_, AppState>) -> Result<(), String> {
         .engine
         .send(engine::Command::StopAudition)
         .map_err(|e| e.to_string())
-}
-
-/// What the Export WAV save dialog suggests: "<show> Q3 <cue>.wav" (web: "<code> Q3 <cue>.wav").
-#[tauri::command]
-pub fn cue_wav_file_name(id: String, state: State<'_, AppState>) -> Result<String, String> {
-    let g = state.open_show.lock().map_err(|_| busy())?;
-    let s = g.as_ref().ok_or("No show is open.")?;
-    let i = s
-        .manifest
-        .cues
-        .iter()
-        .position(|c| c.id == id)
-        .ok_or("That cue is no longer in the show.")?;
-    let name = format!(
-        "{} {} {}",
-        s.manifest.show.name,
-        tqs::cue_number(i, s.manifest.cues.len(), false),
-        s.manifest.cues[i].name
-    );
-    Ok(format!("{}.wav", crate::library::safe_file_name(&name)))
-}
-
-/// Export WAV (web inspector): cue `id`'s audio as it plays, trims, cuts, volume and fades
-/// applied (one pass if it loops), as 16-bit PCM. Decodes the file itself on a blocking task,
-/// so the engine and GO never wait on it.
-#[tauri::command]
-pub async fn export_cue_wav(id: String, path: String, app: AppHandle) -> Result<(), String> {
-    blocking(move || {
-        let state = app.state::<AppState>();
-        // One look at the show: the cue's file, position and edit as they are now.
-        let (index, count, file, render) = {
-            let g = state.open_show.lock().map_err(|_| busy())?;
-            let s = g.as_ref().ok_or("No show is open.")?;
-            let (index, c) = s
-                .manifest
-                .cues
-                .iter()
-                .enumerate()
-                .find(|(_, c)| c.id == id)
-                .ok_or("That cue is no longer in the show.")?;
-            let asset = c
-                .asset
-                .as_ref()
-                .and_then(|a| s.manifest.assets.get(a))
-                .ok_or("This cue has no audio file.")?;
-            let render = engine::CueRender {
-                shape: engine::FadeShape {
-                    trim_start: c.trim_start,
-                    trim_end: c.trim_end,
-                    cuts: c.cuts.clone(),
-                    fade_in: c.fade_in,
-                    fade_out: c.fade_out,
-                    looping: c.looping,
-                },
-                volume: c.volume,
-            };
-            (
-                index,
-                s.manifest.cues.len(),
-                s.dir.join(&asset.path),
-                render,
-            )
-        };
-        let q = tqs::cue_number(index, count, false);
-        let raw =
-            engine::kira::sound::static_sound::StaticSoundData::from_file(&file).map_err(|e| {
-                tracing::error!("decoding {} for WAV export: {e}", file.display());
-                format!(
-                    "{q}'s audio file can't be read, so it can't be exported. Replace the file."
-                )
-            })?;
-        let bytes = engine::cue_wav(&raw, &render).ok_or_else(|| {
-            format!("{q} has no audio left after its trims and cuts, so there's nothing to export.")
-        })?;
-        let out = PathBuf::from(&path);
-        crate::fsutil::atomic_write(&out, &bytes).map_err(|e| {
-            tracing::error!("writing WAV export to {path}: {e:#}");
-            "Couldn't write the file. Check the folder exists and there is free disk space."
-                .to_string()
-        })?;
-        // The temp file it was written through is owner-only; an export is for sharing (as .tqs).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o644));
-        }
-        Ok(())
-    })
-    .await
 }

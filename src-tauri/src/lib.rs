@@ -1,9 +1,11 @@
 //! ThornCue desktop app: Tauri commands and wiring. Rust owns the show; the webview
 //! only sends intents and draws state (docs/ARCHITECTURE.md).
 
+mod audio_export;
 mod commands;
 mod edit_cmds;
 mod editing;
+mod export_cmds;
 mod fsutil;
 mod library;
 mod playback;
@@ -39,6 +41,8 @@ pub struct AppState {
     pub saver: saver::Saver,
     /// Keep-awake and crash recovery (M8).
     pub session: session::Session,
+    /// The audio export that's running, if any (one at a time).
+    pub exports: audio_export::Jobs,
 }
 
 pub fn run() {
@@ -80,6 +84,7 @@ pub fn run() {
                 engine,
                 saver: saver::Saver::start(app.handle().clone()),
                 session,
+                exports: Default::default(),
             });
 
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -147,8 +152,12 @@ pub fn run() {
             edit_cmds::import_pieces,
             edit_cmds::piece_file_name,
             edit_cmds::export_piece,
-            edit_cmds::cue_wav_file_name,
-            edit_cmds::export_cue_wav,
+            export_cmds::cue_audio_file_name,
+            export_cmds::export_cue_audio,
+            export_cmds::audio_export_estimate,
+            export_cmds::audio_export_file_name,
+            export_cmds::start_audio_export,
+            export_cmds::stop_audio_export,
             edit_cmds::add_audio_cues,
             edit_cmds::replace_cue_file,
             edit_cmds::new_show,
