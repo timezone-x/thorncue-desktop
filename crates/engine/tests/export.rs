@@ -175,3 +175,189 @@ fn an_edit_that_leaves_nothing_exports_nothing() {
         .is_none()
     );
 }
+
+// ---- FORMAT.md section 7: the spec's render fixture, and MP3 ----
+
+fn render_fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/format/fixtures/render")
+}
+
+/// Every case in fixtures/render/index.json: same header and length as the expected WAV, and
+/// every sample within the stated tolerance (FORMAT.md 7.2).
+#[test]
+fn matches_the_spec_render_fixtures() {
+    let dir = render_fixtures();
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    let cases = index.as_array().unwrap();
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let cue = &case["cue"];
+        let f = |k: &str| cue[k].as_f64().unwrap();
+        let r = CueRender {
+            shape: FadeShape {
+                trim_start: f("trim_start"),
+                trim_end: cue["trim_end"].as_f64(),
+                cuts: cue["cuts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| [c[0].as_f64().unwrap(), c[1].as_f64().unwrap()])
+                    .collect(),
+                fade_in: f("fade_in"),
+                fade_out: f("fade_out"),
+                looping: cue["loop"].as_bool().unwrap(),
+            },
+            volume: f("volume"),
+        };
+        let raw = StaticSoundData::from_file(dir.join(case["source"].as_str().unwrap())).unwrap();
+        let ours = cue_wav(&raw, &r).expect(name);
+        let expected = std::fs::read(dir.join(case["expected"].as_str().unwrap())).unwrap();
+        assert_eq!(ours.len(), expected.len(), "{name}: length");
+        assert_eq!(ours[..44], expected[..44], "{name}: header");
+        let tol = case["tolerance"].as_i64().unwrap() as i32;
+        let (a, b) = (parse(&ours), parse(&expected));
+        let worst = a
+            .samples
+            .iter()
+            .zip(&b.samples)
+            .map(|(x, y)| (*x as i32 - *y as i32).abs())
+            .max()
+            .unwrap();
+        assert!(
+            worst <= tol,
+            "{name}: a sample is {worst} steps off (tolerance {tol})"
+        );
+    }
+}
+
+#[test]
+fn mp3_rates_and_bit_rates_follow_the_spec() {
+    use engine::mp3_settings;
+    assert_eq!(mp3_settings(44100), (44100, 320));
+    assert_eq!(mp3_settings(48000), (48000, 320));
+    assert_eq!(mp3_settings(32000), (32000, 320));
+    assert_eq!(mp3_settings(24000), (24000, 160));
+    assert_eq!(mp3_settings(22050), (22050, 160));
+    assert_eq!(mp3_settings(16000), (16000, 160));
+    assert_eq!(mp3_settings(12000), (12000, 64));
+    assert_eq!(mp3_settings(8000), (8000, 64));
+    // Not an MP3 rate: 88.2 kHz is a multiple of 11,025, 96 kHz isn't.
+    assert_eq!(mp3_settings(88200), (44100, 320));
+    assert_eq!(mp3_settings(96000), (48000, 320));
+}
+
+/// Decoded length (frames) and rate of an MP3, read back with kira's decoder.
+fn decode_mp3(bytes: Vec<u8>) -> (usize, u32) {
+    let d = StaticSoundData::from_cursor(std::io::Cursor::new(bytes)).unwrap();
+    (d.frames.len(), d.sample_rate)
+}
+
+/// MPEG frame header: bit rate (kbps) and channel mode of the first audio frame after the info
+/// frame. Layer III, MPEG-1 (32 kHz and up) or MPEG-2/2.5.
+fn frame_header(b: &[u8], skip_first: bool) -> (u32, u8) {
+    let mut i = 0;
+    let mut seen = 0;
+    while i + 4 <= b.len() {
+        if b[i] == 0xFF && b[i + 1] & 0xE0 == 0xE0 {
+            let v = (b[i + 1] >> 3) & 3; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
+            let idx = (b[i + 2] >> 4) as usize;
+            let mode = b[i + 3] >> 6;
+            const V1: [u32; 15] = [
+                0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+            ];
+            const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+            let kbps = if v == 3 { V1[idx] } else { V2[idx] };
+            if seen == 1 || !skip_first {
+                return (kbps, mode);
+            }
+            seen += 1;
+            // Skip this frame's header so the next search starts inside it.
+            i += 4;
+            while i + 1 < b.len() && !(b[i] == 0xFF && b[i + 1] & 0xE0 == 0xE0) {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    panic!("no MPEG frame found");
+}
+
+#[test]
+fn mp3_has_the_info_frame_cbr_and_the_rendered_length() {
+    // Ladder (8 kHz mono): 64 kbps, MPEG-2.5; the 4-6 s cut leaves 5 s.
+    let r = render((2.0, Some(9.0)), &[[4.0, 6.0]], (0.5, 0.5), false, 1.0);
+    let raw = load("ladder-dc.wav");
+    let rendered = engine::cue_samples(&raw, &r).unwrap();
+    let mp3 = engine::cue_mp3(&raw, &r).unwrap().unwrap();
+    assert!(mp3.windows(4).any(|w| w == b"Info"), "CBR info frame");
+    assert!(mp3.windows(4).any(|w| w == b"LAME"), "LAME tag");
+    let (frames, rate) = decode_mp3(mp3.clone());
+    assert_eq!(rate, 8000);
+    assert!(
+        frames.abs_diff(rendered.frames()) <= 576,
+        "decoded {frames} frames, rendered {}",
+        rendered.frames()
+    );
+    assert_eq!(frame_header(&mp3, true), (64, 3), "64 kbps mono");
+
+    // Stereo 48 kHz: 320 kbps joint stereo, length within one frame (1,152).
+    let raw = load("stereo-48k.wav");
+    let r = render((0.0, None), &[], (0.0, 0.0), false, 1.0);
+    let rendered = engine::cue_samples(&raw, &r).unwrap();
+    assert_eq!(rendered.channels, 2);
+    let mp3 = engine::cue_mp3(&raw, &r).unwrap().unwrap();
+    let (frames, rate) = decode_mp3(mp3.clone());
+    assert_eq!(rate, 48000);
+    assert!(frames.abs_diff(rendered.frames()) <= 1152);
+    assert_eq!(frame_header(&mp3, true), (320, 1), "320 kbps joint stereo");
+}
+
+#[test]
+fn wav_and_mp3_come_from_the_same_render() {
+    let raw = load("ladder-dc.wav");
+    let r = render((1.0, Some(4.0)), &[], (0.5, 1.0), false, 0.8);
+    let samples = engine::cue_samples(&raw, &r).unwrap();
+    assert_eq!(engine::encode_wav(&samples), cue_wav(&raw, &r).unwrap());
+    assert!((samples.seconds() - 3.0).abs() < 1e-9);
+    assert!(
+        engine::cue_mp3(
+            &raw,
+            &render((0.0, None), &[[0.0, 10.0]], (0.0, 0.0), false, 1.0)
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn rates_mp3_cant_store_are_resampled() {
+    use engine::kira::Frame;
+    use engine::kira::sound::static_sound::StaticSoundSettings;
+    for (rate, want) in [(88_200u32, 44_100u32), (96_000, 48_000)] {
+        let n = rate as usize * 2; // 2 s
+        let frames: Vec<Frame> = (0..n)
+            .map(|i| {
+                let v = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.5;
+                Frame::new(v, -v)
+            })
+            .collect();
+        let raw = StaticSoundData {
+            sample_rate: rate,
+            frames: frames.into(),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        };
+        let mp3 = engine::cue_mp3(&raw, &render((0.0, None), &[], (0.0, 0.0), false, 1.0))
+            .unwrap()
+            .unwrap();
+        let (got, got_rate) = decode_mp3(mp3);
+        assert_eq!(got_rate, want);
+        assert!(
+            got.abs_diff(want as usize * 2) <= 1152,
+            "{rate}: {got} frames"
+        );
+    }
+}
