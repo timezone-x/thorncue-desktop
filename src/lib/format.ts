@@ -27,6 +27,14 @@ export function fmtDate(iso: string | null): string {
   return d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** The cue at `index` (from 0): "Q3", or with `pad` zero-padded to the width of `count` ("Q03"
+ * in a show of 24). The only place the UI builds a cue number (Rust's is tqs::cue_number).
+ * Custom cue numbers (thorncue-spec#16) will replace it. */
+export function cueNumber(index: number, count = 0, pad = false): string {
+  const width = pad ? String(Math.max(1, count)).length : 1;
+  return `Q${String(index + 1).padStart(width, "0")}`;
+}
+
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The Notes column: plain words, no colour (app.js rowNotes). */

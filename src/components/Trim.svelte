@@ -25,7 +25,7 @@
     toSourceTime,
     type EditFields,
   } from "../lib/edits";
-  import { fmtTime } from "../lib/format";
+  import { cueNumber, fmtTime } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
   import { auditionBlocked, checkAudition } from "../lib/outputs.svelte";
 
@@ -384,7 +384,7 @@
   function restore() {
     const before = snapshotOf(edits);
     commit({ ...before, trim_start: 0, trim_end: null, cuts: [] }, before);
-    showToast(`Q${index + 1} plays the full file again. Undo brings the edits back.`);
+    showToast(`${cueNumber(index)} plays the full file again. Undo brings the edits back.`);
   }
 
   // ---- Audition ----

@@ -5,6 +5,7 @@
   // It starts closed whenever a show opens, as the web (static/app.js "Start"); its height is a
   // per-viewer convenience, remembered in localStorage.
   import type { Cue, CuePatch, Group } from "../lib/api";
+  import { cueNumber } from "../lib/format";
   import { syncValue } from "../lib/sync";
   import Trim from "./Trim.svelte";
 
@@ -163,7 +164,7 @@
 <section class="inspector" id="inspector" aria-labelledby="insp-title" hidden={hidden}
   class:is-sized={height !== null} style:height={height !== null ? `${height}px` : undefined}>
   <div class="inspector__head">
-    <h2 class="inspector__title" id="insp-title">{cue ? `Q${index + 1} ${cue.name}` : "Inspector"}</h2>
+    <h2 class="inspector__title" id="insp-title">{cue ? `${cueNumber(index)} ${cue.name}` : "Inspector"}</h2>
     {#if cue}
       <button type="button" class="btn" onclick={() => onDuplicate(cue.id)}>Duplicate</button>
       {#if audio && onExportWav}

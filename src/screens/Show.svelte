@@ -22,7 +22,7 @@
   import { GROUP_COLORS, safeColor } from "../lib/groups";
   import GroupDialog from "../components/GroupDialog.svelte";
   import { act, engine, startEngineMirror } from "../lib/engine.svelte";
-  import { fmtBytes, fmtTime, plural, rowNotes } from "../lib/format";
+  import { cueNumber, fmtBytes, fmtTime, plural, rowNotes } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
   import { syncValue } from "../lib/sync";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
@@ -126,9 +126,9 @@
       // The most recently started cue in the group, as the now-playing strip.
       const started = engine.positions.filter((p) => !p.audition && rows.includes(p.index));
       const i = started[started.length - 1]?.index ?? runningRows[runningRows.length - 1];
-      parts.push(`Playing Q${i + 1}`);
+      parts.push(`Playing ${cueNumber(i)}`);
     } else if (rows.includes(standby) && collapsed.has(g.id)) {
-      parts.push(`Standby Q${standby + 1}`);
+      parts.push(`Standby ${cueNumber(standby)}`);
     }
     parts.push(playedN || runningRows.length ? `${playedN} of ${n} played` : plural(n, "cue"));
     return parts.join(" · ");
@@ -201,8 +201,8 @@
     const last = cueIndex(ids[ids.length - 1]) + 1;
     const hint =
       ids.length === 1
-        ? `Groups Q${first}. Drag more cues into the group, or shift-click to select a range first.`
-        : `Groups Q${first} to Q${last} (${ids.length} cues).`;
+        ? `Groups ${cueNumber(first - 1)}. Drag more cues into the group, or shift-click to select a range first.`
+        : `Groups ${cueNumber(first - 1)} to ${cueNumber(last - 1)} (${ids.length} cues).`;
     groupDialog = { mode: "new", ids, name: `Group ${n}`, color, hint };
   }
 
@@ -270,7 +270,7 @@
       const added = r.show.cues.length - before;
       // One toast, so a later "Added" never hides which files failed.
       if (r.problems.length) showToast(`Added ${added} of ${audio.length}. Couldn't add: ${r.problems.join(" ")}`, true);
-      else showToast(added === 1 ? `Added Q${r.show.cues.length} "${r.show.cues[r.show.cues.length - 1].name}".` : `Added ${added} cues.`);
+      else showToast(added === 1 ? `Added ${cueNumber(r.show.cues.length - 1)} "${r.show.cues[r.show.cues.length - 1].name}".` : `Added ${added} cues.`);
     } catch (e) {
       showToast(errorText(e), true);
     } finally {
@@ -518,7 +518,7 @@
   // ---- Transport text ----
 
   const standbyName = $derived(
-    cues[standby] ? `Q${standby + 1} ${cues[standby].name}` : cues.length ? "End of cue list" : "No cues",
+    cues[standby] ? `${cueNumber(standby)} ${cues[standby].name}` : cues.length ? "End of cue list" : "No cues",
   );
 
   const status = $derived.by((): { text: string; kind: "" | "running" | "paused" | "error" } => {
@@ -548,12 +548,12 @@
     const p = audio[audio.length - 1] ?? cuesOnly[cuesOnly.length - 1];
     if (!p) {
       const r = snap?.running[snap.running.length - 1];
-      if (r) return { name: `Q${r.index + 1} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
+      if (r) return { name: `${cueNumber(r.index)} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
       return null;
     }
     const phase = snap?.running.find((r) => r.index === p.index)?.phase ?? "running";
     const cue = cues[p.index];
-    const name = `Q${p.index + 1} ${cue?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
+    const name = `${cueNumber(p.index)} ${cue?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
     let times: string;
     if (phase === "waiting") times = `Waiting (pre-wait ${cue?.pre_wait ?? 0} s)`;
     else if (p.control) times = `${fmtTime(p.remaining ?? 0, true)} left`;
@@ -631,7 +631,7 @@
     e.preventDefault();
     const n = jumpValue ?? NaN;
     if (!Number.isInteger(n) || n < 1 || n > cues.length) {
-      jumpError = `There is no Q${jumpValue ?? "?"}. This show has ${plural(cues.length, "cue")}.`;
+      jumpError = `There is no ${jumpValue == null ? "Q?" : cueNumber(jumpValue - 1)}. This show has ${plural(cues.length, "cue")}.`;
       return;
     }
     jumpDialog.close();
@@ -897,7 +897,7 @@
   {@const d = confirmDelete}
   <ConfirmDialog
     title="Delete this cue?"
-    message={`Q${d.index + 1} "${d.cue.name}" will be removed from the show.`}
+    message={`${cueNumber(d.index)} "${d.cue.name}" will be removed from the show.`}
     confirmLabel="Delete cue"
     danger
     onConfirm={doDelete}

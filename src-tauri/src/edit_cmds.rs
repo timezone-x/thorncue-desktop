@@ -375,7 +375,11 @@ pub fn piece_file_name(
         [i] => {
             let name = m.cues[*i].name.trim();
             let name = if name.is_empty() {
-                format!("{} Q{}", m.show.name, i + 1)
+                format!(
+                    "{} {}",
+                    m.show.name,
+                    tqs::cue_number(*i, m.cues.len(), false)
+                )
             } else {
                 name.to_string()
             };
@@ -383,7 +387,12 @@ pub fn piece_file_name(
         }
         [a, .., b] => Ok(format!(
             "{}.tqc",
-            safe(&format!("{} - Q{} to Q{}", m.show.name, a + 1, b + 1))
+            safe(&format!(
+                "{} - {} to {}",
+                m.show.name,
+                tqs::cue_number(*a, m.cues.len(), false),
+                tqs::cue_number(*b, m.cues.len(), false)
+            ))
         )),
     }
 }
@@ -642,9 +651,9 @@ pub fn cue_wav_file_name(id: String, state: State<'_, AppState>) -> Result<Strin
         .position(|c| c.id == id)
         .ok_or("That cue is no longer in the show.")?;
     let name = format!(
-        "{} Q{} {}",
+        "{} {} {}",
         s.manifest.show.name,
-        i + 1,
+        tqs::cue_number(i, s.manifest.cues.len(), false),
         s.manifest.cues[i].name
     );
     Ok(format!("{}.wav", crate::library::safe_file_name(&name)))
@@ -658,7 +667,7 @@ pub async fn export_cue_wav(id: String, path: String, app: AppHandle) -> Result<
     blocking(move || {
         let state = app.state::<AppState>();
         // One look at the show: the cue's file, position and edit as they are now.
-        let (index, file, render) = {
+        let (index, count, file, render) = {
             let g = state.open_show.lock().map_err(|_| busy())?;
             let s = g.as_ref().ok_or("No show is open.")?;
             let (index, c) = s
@@ -684,9 +693,14 @@ pub async fn export_cue_wav(id: String, path: String, app: AppHandle) -> Result<
                 },
                 volume: c.volume,
             };
-            (index, s.dir.join(&asset.path), render)
+            (
+                index,
+                s.manifest.cues.len(),
+                s.dir.join(&asset.path),
+                render,
+            )
         };
-        let q = format!("Q{}", index + 1);
+        let q = tqs::cue_number(index, count, false);
         let raw =
             engine::kira::sound::static_sound::StaticSoundData::from_file(&file).map_err(|e| {
                 tracing::error!("decoding {} for WAV export: {e}", file.display());
