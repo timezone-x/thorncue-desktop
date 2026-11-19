@@ -21,6 +21,15 @@
 
 Groups never affect playback, so engine tests don't need these; they're for readers, writers and importers.
 
+## Audio export (spec 1.2, FORMAT.md section 7)
+
+These aren't packages, so they're **not** in `index.json` (which readers loop over). Each folder has its own `index.json`.
+
+| Folder | What it checks |
+|---|---|
+| `render/` | 7.1–7.2 rendering. `index.json` gives the cue (package fields), its source WAV, the expected WAV, its SHA-256 and `tolerance` (16-bit steps per sample). Render the cue from the source with your exporter; the header and length must match `expected-01.wav` exactly and every sample must be within the tolerance. `tools/render_ref.py check` does this for the reference. The cue has a trim, two cuts (so two 4 ms joins), fades and 150% volume on a 0.8 sine, so it also checks clipping. |
+| `audio-export/` | 7.5 importing. `with-tqs.zip` imports as the show inside it (the same as `valid/01-minimal.tqs`); `without-tqs.zip`, `rezipped-no-comment.zip` (no zip comment, recognised by `cue-list.csv`) and `group-folders.zip` (a group folder named `show.json`, which must not look like a legacy Export ZIP) are refused with the 7.5 message. |
+
 ## The audio
 
 All generated with ffmpeg (see `../tools/make_fixtures.py`). No real recordings.

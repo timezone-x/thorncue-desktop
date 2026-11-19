@@ -1,6 +1,6 @@
 # ThornCue package format (`.tqs`, `.tqc`, `.tqg`), format_version 1
 
-Spec revision **1.1** (2026-11-14). Status: **format_version 1, stable.** This file is the contract between ThornCue Web and the ThornCue desktop client. The master copy lives in `timezone-x/thorncue-spec`; each app repo carries an unedited copy in `docs/format/`. Changes are made in the spec repo only (see its `SESSIONS.md`), and `CHANGELOG.md` there lists what changed in each revision.
+Spec revision **1.2** (2026-11-19). Status: **format_version 1, stable.** This file is the contract between ThornCue Web and the ThornCue desktop client. The master copy lives in `timezone-x/thorncue-spec`; each app repo carries an unedited copy in `docs/format/`. Changes are made in the spec repo only (see its `SESSIONS.md`), and `CHANGELOG.md` there lists what changed in each revision.
 
 | Extension | `format` | What it is |
 |---|---|---|
@@ -10,12 +10,15 @@ Spec revision **1.1** (2026-11-14). Status: **format_version 1, stable.** This f
 
 All three are the same container with the same manifest; they differ only in which top-level sections they have. One reader handles all three.
 
+Section 7 covers something that is **not** a package: the audio export (`<show> audio.zip`), so both apps render cues and name the files the same way, and both recognise one when it's imported by mistake.
+
 Files in this folder:
 
 - `FORMAT.md`: this spec (normative).
 - `manifest.schema.json`: JSON Schema for `manifest.json` (all three kinds). Covers shape and ranges; the rules below that a schema can't express (cross-references, zip safety, hashes, grouping) are normative too.
 - `fixtures/`: packages every implementation must pass. `valid/` must import, `invalid/` must be rejected with a clear error, `legacy/` is the old web "Export ZIP" format.
 - `tools/tqs_ref.py`: reference reader and writer, Python standard library only. When this spec and the reference tool disagree, the spec wins and the tool has a bug.
+- `tools/render_ref.py`: reference renderer for section 7 (numpy and the standard library's `wave`), with `fixtures/render/` to check an app's renderer against.
 
 The words MUST, MUST NOT, SHOULD and MAY mean what RFC 2119 says.
 
@@ -314,3 +317,102 @@ What both apps do, so the result is the same in either:
 5. Standby doesn't move. Running cues aren't touched.
 
 Audio is copied into the show the same way the app stores any other audio (the web gives each cue its own file; the desktop app keeps shared assets shared). An app MAY skip copying a file it already holds with the same SHA-256.
+
+## 7. Audio export (not a package)
+
+Both apps can export cues as ordinary audio files, for a sound designer, a rehearsal recording or another playback system. An audio export is **not** a ThornCue file: there is no manifest, and nothing in it is read back as cues. This section fixes how a cue is rendered and how the files are named, so both apps produce the same export from the same show.
+
+### 7.1 Rendering a cue
+
+An audio cue renders to exactly what GO plays (2.5), once, with nothing else running:
+
+1. **Decode** the source file at its own sample rate, to floating point. 16-bit PCM decodes as `sample / 32768`. Never resample (except for MP3, 7.2). Channels: a mono file stays mono and a stereo file stays stereo. A file with more than two channels is mixed down to stereo the way the app's decoder does it for playback. (An app whose decoder doesn't keep the channel count MAY treat a file whose two channels are equal in every frame as mono.)
+2. **Edit** as in 2.5, to the sample. With `sr` the sample rate, `N` the decoded length in frames and `D = N / sr`:
+   - Kept segments: start with `[clamp(trim_start, 0, D), clamp(trim_end, 0, D)]` (`trim_end` null, or not after the start: `D`), subtract every cut, and drop any segment of 1 ms or less (`end − start ≤ 0.001`). No segments: the cue renders to **nothing** (no file).
+   - A segment `[s, e]` is frames `round(s × sr)` up to (not including) `round(e × sr)`, never past `N`. `round` is round-half-away-from-zero everywhere in this section.
+   - One segment: those frames, untouched. Several: the segments end to end, and at each join a linear ramp of `r = min(round(0.004 × sr), len // 2)` frames, where `len` is that segment's frame count. A segment after a join has frame `k` (from its start, `0 ≤ k < r`) multiplied by `k / r`; a segment before a join has frame `k` from its **end** (the last frame is `k = 0`) multiplied by `k / r`. No ramp at the very start or end.
+3. **Gain.** With `M` edited frames, `L = M / sr` and frame `i` at `t = i / sr`:
+   - Fade-out start: if `loop` is false and `fade_out > 0`, `fs = max(L − fade_out, min(fade_in, L))`; otherwise there is no fade-out.
+   - Envelope: if there is a fade-out and `t ≥ fs`, `(L − t) / (L − fs)` clamped to 0–1 (0 if `L = fs`); otherwise, if `fade_in > 0` and `t < fade_in`, `t / fade_in`; otherwise 1.
+   - Each sample is multiplied by `volume × envelope(t)`. `volume` is the cue's 0–2. **Master volume is ignored**: it's a playback setting (2.5).
+4. **Loops** render one pass, with no fade-out (as 2.5 step 5: the fade-out never plays while looping). The fade-in applies.
+5. **Clip.** Every sample is clamped to −1…+1 before encoding. Only a cue whose volume is over 100% (or whose source is already at full scale) can reach that. The file is then clipped where playback would have been louder than full scale; it is not turned down to fit.
+
+Silence and fade-out cues have no audio and render to nothing. So does an audio cue whose audio is missing.
+
+### 7.2 File formats
+
+| Format | Encoding |
+|---|---|
+| WAV | RIFF/WAVE, PCM 16-bit little-endian, the source's sample rate, 1 or 2 channels as 7.1. A sample `v` (after clipping) becomes `round(v × 32768)` if negative and `round(v × 32767)` otherwise. The 44-byte canonical header (`fmt ` chunk of 16 bytes, then `data`), nothing else. |
+| MP3 | MPEG audio layer III, constant bit rate, encoded with LAME (or anything equivalent) with the Xing/LAME info frame, so players skip the encoder delay. **320 kbps** at the source's sample rate. MP3 only allows 8, 11.025, 12, 16, 22.05, 24, 32, 44.1 and 48 kHz, and lower rates have lower ceilings, so the highest the rate allows is used: **160 kbps** at 16–24 kHz, **64 kbps** at 8–12 kHz. Any other rate is resampled to 44.1 kHz if it is a multiple of 11,025 Hz and to 48 kHz otherwise. Stereo is joint stereo. The decoded length MUST be the rendered length within one MP3 frame (1,152 samples at 32 kHz and up, 576 below). |
+
+"Original files" (an export with edits turned off, 7.3) are the uploaded files exactly as stored, byte for byte, with their own extension, lowercased.
+
+Apps that render in floating point won't match the reference to the bit. `fixtures/render/` gives a cue, its source and the expected WAV; an app's WAV MUST have the same header and length, and every sample within the tolerance stated there (one 16-bit step) of the expected one.
+
+### 7.3 The audio zip
+
+The options, with defaults in brackets. Apps show them in this order and with these meanings; the wording is each app's own.
+
+| Option | Meaning |
+|---|---|
+| Cues [all] | All cues, the selected cues, or one group's cues. |
+| Apply edits [on] | On: each audio cue rendered (7.1) as WAV [default] or MP3. Off: the original files (7.2), no format choice. |
+| Keep cue numbers in file names [on] | `Q03 Storm.wav` instead of `Storm.wav`. |
+| Folder per group [off] | Grouped cues go in a folder named after their group; others stay at the top level. |
+| Include the cue list [on] | Adds `cue-list.csv` (7.4). |
+| Include the .tqs [off] | Adds the show as a package (sections 1–3), so the export can be imported later (7.5). |
+
+**Files.** One file for every audio cue that renders to something (7.1), or, with edits off, every audio cue whose file exists. Cues sharing a source each get their own file: the point is files named after cues. A cue that renders to nothing gets no file and keeps its row in the cue list.
+
+**Cue numbers.** In ThornCue v1 a cue's number is its position in the show, from 1, shown as `Q3`. It is always the cue's number in the whole show, even when only some cues are exported. In file names it is zero-padded to the number of digits in the show's cue count, so files sort in cue order: `Q03` in a show of 24 cues, `Q003` in a show of 120, `Q3` in a show of 9. Each app builds a number in exactly one place (custom cue numbers will replace it there).
+
+**Names.** A file's name is `<number> <cue name>.<ext>` (or `<cue name>.<ext>` with numbers off), made safe by this rule, which every name in this section uses:
+
+1. Remove `\ / : * ? " < > |` and control characters other than whitespace (U+0000–U+0008, U+000E–U+001F, U+007F).
+2. Turn every run of whitespace (spaces, tabs, line breaks, no-break spaces) into one space; trim spaces and dots from both ends.
+3. Cut to 100 characters (60 for a folder name), then trim again.
+4. If what's left is empty, use the fallback (a file: the cue's number; a folder: `Group`).
+5. If it is a name Windows reserves (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any case), add `_`.
+
+The extension is added after this: `wav`, `mp3`, or the original's.
+
+**Folders.** With "Folder per group", each group's files go under `<group name>/`. Ungrouped cues stay at the top level. Groups are folders one level deep; there is no other nesting.
+
+**Collisions.** Names are compared case-insensitively, within one folder (the top level is one folder, and each group folder another). The top level reserves `cue-list.csv` and the `.tqs`'s name first, and folder names and file names share the top level. The first claimant (in cue order; folders in the order their groups first appear) keeps the name; later ones get ` (2)`, ` (3)` and so on before the extension: `Storm.wav`, `Storm (2).wav`. Two groups both called "Storm" are `Storm/` and `Storm (2)/`.
+
+**The zip.** Named `<show name> audio.zip`. A partial export MAY add which part, as the `.tqc` name does (3): `<show name> - Q4 to Q9 audio.zip`, `<show name> - Storm audio.zip`. Entries in this order: `cue-list.csv`, the audio files in cue order, the `.tqs` last. Audio and the `.tqs` are **stored** (they're compressed already, or WAV that DEFLATE barely helps); `cue-list.csv` is DEFLATEd. The `.tqs` is `<show name>.tqs`, holding the whole show whatever the cue choice. The zip comment is exactly `thorncue.audio-export` (it's how readers recognise one, 7.5). Paths use `/` and are UTF-8, with the zip's language-encoding flag set on any name that isn't plain ASCII. The zip is written to a temporary file first, as in section 3.
+
+### 7.4 `cue-list.csv`
+
+One row per exported cue, in show order, **including silence and fade-out cues** (their timing matters to whoever rebuilds the show). UTF-8 with a byte-order mark (so spreadsheet apps read the names right), CRLF line ends, RFC 4180 quoting. The header row is exactly:
+
+```
+number,name,type,file,group,volume %,fade in,fade out,pre-wait,loop,auto-continue,length
+```
+
+| Column | Value |
+|---|---|
+| `number` | The cue number, unpadded: `Q3`. |
+| `name` | The cue's name. |
+| `type` | `Audio`, `Silence` or `Fade-out`. |
+| `file` | Its path in the zip (`Act 1/Q03 Storm.wav`), or empty: silence and fade-out cues, missing audio, an edit that leaves nothing. |
+| `group` | The group's name, or empty. |
+| `volume %` | Audio cues: `volume × 100`, rounded to a whole number. Otherwise empty. |
+| `fade in`, `fade out` | Audio cues: seconds. Otherwise empty. |
+| `pre-wait` | Seconds, every cue. |
+| `loop` | Audio cues: `no`, or `yes (file plays once)`, so nobody expects a loop in the file. Otherwise empty. |
+| `auto-continue` | `yes` or `no`. |
+| `length` | Seconds the cue lasts: an audio cue's edited length (2.5) when its audio is there (empty if not), a silence or fade-out cue's `duration`. |
+
+Seconds are written with up to 3 decimals and no trailing zeros (`1.5`, `0`, `12.345`). The values describe the cue, not the file: with edits off, `volume %` and the fades are what the operator would have to apply to the original. A field that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet never runs a cue name as a formula.
+
+### 7.5 Importing an audio export
+
+An audio export isn't a show, but people will try to open one. An importer recognises it **before** the legacy test (5), so one is never mistaken for an old Export ZIP: a zip whose comment is `thorncue.audio-export`, or (if the comment was lost when someone re-zipped it) a zip with no `manifest.json`, no `show.json` at the top level or one folder down, and a `cue-list.csv` at the top level.
+
+- **With a `.tqs` at the top level** (exactly one): import that `.tqs` as a show, with every rule in sections 1–4 (its size counts against the same limit), and say so: "This is an audio export. Imported the show file inside it." Places that take cues (`.tqc`/`.tqg`) say instead that the show inside can be imported as a show.
+- **Without one:** refuse it with: "This is an audio export, not a show. Export it again with "Include the .tqs" ticked."
+
+The section 1.3 safety rules apply to the zip itself before anything is read from it.
