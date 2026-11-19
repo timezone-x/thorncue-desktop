@@ -5,6 +5,7 @@
 //! No Tauri and no kira here (CLAUDE.md rule 6).
 
 mod audio;
+mod audio_export;
 mod error;
 mod legacy;
 mod manifest;
@@ -14,6 +15,12 @@ mod write;
 mod zipcheck;
 
 pub use audio::check_audio_file;
+pub use audio_export::{
+    AUDIO_EXPORT_COMMENT, AUDIO_EXPORT_FOR_CUES, AUDIO_EXPORT_IMPORTED, AUDIO_EXPORT_REFUSED,
+    AudioExportOptions, AudioFormat, AudioZip, CSV_HEADER, CUE_LIST, CueChoice, Namer,
+    cue_list_csv, cue_number, extract_audio_export_tqs, picked, plan_paths, safe_name, seconds,
+    single_file_name, zip_name,
+};
 pub use error::{Result, TqsError, Warning};
 pub use legacy::import_legacy_zip;
 pub use manifest::{
