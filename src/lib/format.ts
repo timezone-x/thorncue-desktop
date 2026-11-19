@@ -27,6 +27,14 @@ export function fmtDate(iso: string | null): string {
   return d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** The cue at `index` (from 0): "Q3", or with `pad` zero-padded to the width of `count` ("Q03"
+ * in a show of 24). The only place the UI builds a cue number (Rust's is tqs::cue_number).
+ * Custom cue numbers (thorncue-spec#16) will replace it. */
+export function cueNumber(index: number, count = 0, pad = false): string {
+  const width = pad ? String(Math.max(1, count)).length : 1;
+  return `Q${String(index + 1).padStart(width, "0")}`;
+}
+
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The Notes column: plain words, no colour (app.js rowNotes). */
@@ -44,4 +52,16 @@ export function rowNotes(c: Cue): string {
   }
   if (c.continue === "after_end") n.push("Auto-continue");
   return n.join(", ");
+}
+
+/** FORMAT.md 7.3's file-name rule, for the Export audio dialog's examples (web safeFileName;
+ * the files themselves are named by tqs::safe_name). */
+export function safeFileName(name: string, fallback = "", limit = 100): string {
+  // eslint-disable-next-line no-control-regex
+  let s = name.replace(/[\\/:*?"<>|\u0000-\u0008\u000e-\u001f\u007f]/g, "");
+  s = s.split(/\s+/).filter(Boolean).join(" ").replace(/^[ .]+|[ .]+$/g, "");
+  s = [...s].slice(0, limit).join("").replace(/^[ .]+|[ .]+$/g, "");
+  if (!s) s = fallback;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(s)) s += "_";
+  return s;
 }

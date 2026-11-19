@@ -305,7 +305,11 @@ pub fn recover_session(
     let mut show = open_show(id, app, state.clone())?;
     let standby = show.local.standby_index;
     let at = match show.cues.get(standby) {
-        Some(c) => format!("Q{} {} is on standby", standby + 1, c.name),
+        Some(c) => format!(
+            "{} {} is on standby",
+            tqs::cue_number(standby, show.cues.len(), false),
+            c.name
+        ),
         None => "standby is at the end of the cue list".to_string(),
     };
     let message = format!(

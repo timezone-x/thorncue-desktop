@@ -13,6 +13,11 @@ serde.workspace = true
 crossbeam-channel = "0.5.17"
 # Default features (cpal output, mp3/ogg/flac/wav) plus M4A and AIFF.
 kira = { version = "0.12.6", features = ["aac", "isomp4", "aiff"] }
+# MP3 export (FORMAT.md 7.2). Builds LAME (LGPL) from its C source; checked on Linux, Windows
+# and macOS (arm64 and x86_64) before it was added.
+mp3lame-encoder = "0.3.0"
+# Only for tqs::cue_number, the one place cue numbers are built (FORMAT.md 7.3).
+tqs = { path = "../tqs" }
 
 [dev-dependencies]
 serde_json.workspace = true

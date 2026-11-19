@@ -297,10 +297,48 @@ export const editApi = {
   importPieces: (paths: string[]) => invoke<PiecesResult>("import_pieces", { paths }),
   pieceFileName: (piece: Piece) => invoke<string>("piece_file_name", piece),
   exportPiece: (piece: Piece, path: string) => invoke<void>("export_piece", { ...piece, path }),
-  cueWavFileName: (id: string) => invoke<string>("cue_wav_file_name", { id }),
-  /** The cue's audio as it plays (trims, cuts, volume, fades; one pass if it loops), as WAV. */
-  exportCueWav: (id: string, path: string) => invoke<void>("export_cue_wav", { id, path }),
 };
+
+// ---- Export audio (FORMAT.md section 7; src-tauri/src/export_cmds.rs) ----
+
+export type AudioFormat = "wav" | "mp3";
+export type CueChoice = { kind: "all" } | { kind: "selected"; value: string[] } | { kind: "group"; value: string };
+export interface AudioExportOptions {
+  cues: CueChoice;
+  edits: boolean;
+  format: AudioFormat;
+  numbers: boolean;
+  folders: boolean;
+  cue_list: boolean;
+  tqs: boolean;
+}
+/** FORMAT.md 7.3's defaults. */
+export const AUDIO_DEFAULTS: AudioExportOptions = {
+  cues: { kind: "all" }, edits: true, format: "wav", numbers: true, folders: false, cue_list: true, tqs: false,
+};
+export interface AudioExportProgress { done: number; total: number; phase: "rendering" | "copying" | "zipping" }
+export interface AudioExportDone { files: number; file_name: string }
+
+/** `show`: a library show's id (the Library row), or null for the open show. */
+export const exportApi = {
+  cueFileName: (id: string, format: AudioFormat) => invoke<string>("cue_audio_file_name", { id, format }),
+  /** One cue's audio as it plays (trims, cuts, volume, fades; one pass if it loops). */
+  exportCue: (id: string, format: AudioFormat, path: string) => invoke<void>("export_cue_audio", { id, format, path }),
+  estimate: (show: string | null, options: AudioExportOptions) =>
+    invoke<{ files: number; bytes: number }>("audio_export_estimate", { show, options }),
+  fileName: (show: string | null, options: AudioExportOptions) => invoke<string>("audio_export_file_name", { show, options }),
+  /** Resolves with what was written, or null if it was stopped. */
+  start: (show: string | null, options: AudioExportOptions, path: string) =>
+    invoke<AudioExportDone | null>("start_audio_export", { show, options, path }),
+  stop: () => invoke<void>("stop_audio_export"),
+  outline: (show: string | null) => invoke<ExportOutline>("audio_export_outline", { show }),
+};
+
+export interface ExportOutline {
+  name: string;
+  cues: { id: string; name: string; group: string | null; audio_ext: string | null }[];
+  groups: Group[];
+}
 
 /** What to export: some cues (.tqc) or one group (.tqg). */
 export type Piece = { ids: string[]; group?: null } | { ids?: null; group: string };

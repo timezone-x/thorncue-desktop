@@ -124,7 +124,10 @@ impl Library {
         };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with(".tqs-import-")
+            if name.starts_with(".audio-export-") {
+                // The .tqs copied out of an audio export by an import that was interrupted.
+                let _ = std::fs::remove_file(e.path());
+            } else if name.starts_with(".tqs-import-")
                 || name.starts_with(".replace-")
                 || name.starts_with(".new-")
             {
@@ -334,6 +337,27 @@ impl Library {
                 tqs::read_package_with_progress(path, &dest, Limits::default(), on_progress)?
             }
             PackageKind::LegacyWebExport => tqs::import_legacy_zip(path, &dest, Limits::default())?,
+            // FORMAT.md 7.5: not a show; import the .tqs inside it, or refuse.
+            PackageKind::AudioExport => {
+                let inner = tempfile::Builder::new()
+                    .prefix(".audio-export-")
+                    .suffix(".tqs")
+                    .tempfile_in(&self.root)
+                    .map_err(|e| tqs::TqsError::Io {
+                        action: "create a temporary file in",
+                        path: self.root.clone(),
+                        source: e,
+                    })?;
+                tqs::extract_audio_export_tqs(path, inner.path(), Limits::default())?;
+                let (m, mut w) = tqs::read_package_with_progress(
+                    inner.path(),
+                    &dest,
+                    Limits::default(),
+                    on_progress,
+                )?;
+                w.insert(0, Warning(tqs::AUDIO_EXPORT_IMPORTED.into()));
+                (m, w)
+            }
         };
         let local = LocalState {
             imported_at: Some(tqs::now_rfc3339()),
@@ -627,6 +651,41 @@ mod tests {
         assert_eq!(shows.len(), 7);
         let web = shows.iter().find(|s| s.source.is_some()).unwrap();
         assert!(!web.source.as_ref().unwrap().code.is_empty());
+    }
+
+    /// FORMAT.md 7.5: the .tqs inside an audio export is imported, and the dialog says so;
+    /// without one it's refused with the spec's message. Nothing is left behind either way.
+    #[test]
+    fn audio_export_zips_import_the_show_inside_or_are_refused() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::new(data.path()).unwrap();
+        let (id, m, warnings) = lib
+            .import_file(&fixture("audio-export/with-tqs.zip"), &mut |_| {})
+            .unwrap();
+        assert_eq!(warnings[0].0, tqs::AUDIO_EXPORT_IMPORTED);
+        let (_, want, _) = lib
+            .import_file(&fixture("valid/01-minimal.tqs"), &mut |_| {})
+            .unwrap();
+        assert_eq!(m.cues, want.cues);
+        assert!(lib.open(&id).unwrap().dir.join("manifest.json").is_file());
+        for f in [
+            "without-tqs.zip",
+            "rezipped-no-comment.zip",
+            "group-folders.zip",
+        ] {
+            let err = lib
+                .import_file(&fixture(&format!("audio-export/{f}")), &mut |_| {})
+                .unwrap_err();
+            assert_eq!(err.to_string(), tqs::AUDIO_EXPORT_REFUSED, "{f}");
+        }
+        assert_eq!(lib.list().unwrap().len(), 2);
+        assert!(
+            visible_entries(lib.root())
+                .iter()
+                .all(|n| !n.starts_with('.')),
+            "{:?}",
+            visible_entries(lib.root())
+        );
     }
 
     #[test]

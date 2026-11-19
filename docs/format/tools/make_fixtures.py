@@ -15,6 +15,7 @@ All audio is generated (sine tones, DC steps). Never put real show audio in fixt
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import struct
 import subprocess
@@ -433,5 +434,98 @@ def main() -> None:
     print(f"Wrote {len(index)} fixtures to {FIX}")
 
 
+# ---------------------------------------------------------------------------
+# Section 7: render case and audio-export zips. Separate from main() so they can be rebuilt
+# alone (python make_fixtures.py --section-7) without touching the package fixtures.
+# ---------------------------------------------------------------------------
+
+RENDER = FIX / "render"
+AUDIO_EXPORT = FIX / "audio-export"
+ZIP_TIME = (2026, 11, 19, 0, 0, 0)
+
+
+def _tone_wav(path: Path, hz: float, secs: float, sr: int, amplitude: float) -> None:
+    """A mono 16-bit sine, computed with the standard library so it's the same on every machine."""
+    n = int(secs * sr)
+    frames = b"".join(struct.pack("<h", int(round(amplitude * 32767 * math.sin(2 * math.pi * hz * i / sr))))
+                      for i in range(n))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(frames)
+
+
+def _zip(path: Path, entries: list, comment: bytes = b"") -> None:
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data, method in entries:
+            info = zipfile.ZipInfo(name, ZIP_TIME)
+            info.compress_type = method
+            z.writestr(info, data)
+        z.comment = comment
+
+
+def make_section_7() -> None:
+    import hashlib
+    import render_ref
+
+    RENDER.mkdir(parents=True, exist_ok=True)
+    src = RENDER / "tone-f349-loud.wav"
+    _tone_wav(src, 349.0, 3.0, 22050, 0.8)
+    cue = {"id": "r1", "type": "audio", "name": "Storm swell", "asset": "tone-f349-loud",
+           "volume": 1.5, "fade_in": 0.3, "fade_out": 0.5, "pre_wait": 0.0, "duration": 0.0,
+           "loop": False, "continue": "none", "trim_start": 0.25, "trim_end": 2.75,
+           "cuts": [[0.8, 1.0], [1.6, 1.75]]}
+    out = render_ref.render_file(src, cue)
+    (RENDER / "expected-01.wav").write_bytes(out)
+    cases = [{
+        "name": "01-trim-cuts-fades-150",
+        "about": "Trim 0.25-2.75, cuts 0.8-1.0 and 1.6-1.75 (two 4 ms joins), fade in 0.3, fade out 0.5, "
+                 "volume 150% on a 0.8 sine, so the loudest part clips at full scale. Edited length 2.15 s.",
+        "source": src.name,
+        "cue": cue,
+        "expected": "expected-01.wav",
+        "sha256": hashlib.sha256(out).hexdigest(),
+        "tolerance": 1,
+        "tolerance_about": "Largest allowed difference per sample, in 16-bit steps, for renderers that work in "
+                           "floating point (FORMAT.md 7.2). Header and length must match exactly.",
+    }]
+    (RENDER / "index.json").write_text(json.dumps(cases, indent=2) + "\n", "utf-8")
+
+    AUDIO_EXPORT.mkdir(parents=True, exist_ok=True)
+    tone = (AUDIO / "tone-a440.wav").read_bytes()
+    csv = ("\ufeffnumber,name,type,file,group,volume %,fade in,fade out,pre-wait,loop,auto-continue,length\r\n"
+           "Q1,Tone,Audio,Q1 Tone.wav,,100,0,0,0,no,no,2\r\n").encode("utf-8")
+    show = (VALID / "01-minimal.tqs").read_bytes()
+    D, S = zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED
+    _zip(AUDIO_EXPORT / "with-tqs.zip",
+         [("cue-list.csv", csv, D), ("Q1 Tone.wav", tone, S), ("Minimal.tqs", show, S)],
+         b"thorncue.audio-export")
+    _zip(AUDIO_EXPORT / "without-tqs.zip",
+         [("cue-list.csv", csv, D), ("Q1 Tone.wav", tone, S)], b"thorncue.audio-export")
+    _zip(AUDIO_EXPORT / "rezipped-no-comment.zip",
+         [("cue-list.csv", csv, D), ("Q1 Tone.wav", tone, S)])
+    _zip(AUDIO_EXPORT / "group-folders.zip",
+         [("cue-list.csv", csv, D), ("show.json/Q1 Tone.wav", tone, S)], b"thorncue.audio-export")
+    index = [
+        {"file": "with-tqs.zip", "expect": "import-inner-tqs", "inner": "Minimal.tqs",
+         "about": "Audio export with Include the .tqs ticked: import the .tqs inside (same result as "
+                  "valid/01-minimal.tqs) and say it was an audio export."},
+        {"file": "without-tqs.zip", "expect": "reject-audio-export",
+         "about": "No .tqs inside: refuse with the 7.5 message."},
+        {"file": "rezipped-no-comment.zip", "expect": "reject-audio-export",
+         "about": "Re-zipped by hand, so the comment is gone: still recognised by its top-level cue-list.csv."},
+        {"file": "group-folders.zip", "expect": "reject-audio-export",
+         "about": "A group folder that happens to be called show.json: the comment makes it an audio export, "
+                  "never a legacy Export ZIP (section 5)."},
+    ]
+    (AUDIO_EXPORT / "index.json").write_text(json.dumps(index, indent=2) + "\n", "utf-8")
+    print(f"Wrote {RENDER} and {AUDIO_EXPORT}")
+
+
 if __name__ == "__main__":
-    main()
+    if "--section-7" in sys.argv:
+        make_section_7()
+    else:
+        main()
+        make_section_7()

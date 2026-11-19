@@ -20,7 +20,9 @@ pub use backend::{
 };
 pub use core::{AuditionOpener, Command, Core, ManagerFactory, Options, OutputSetup};
 pub use edit::kept_segments;
-pub use export::{CueRender, cue_wav};
+pub use export::{
+    CueRender, Rendered, cue_mp3, cue_samples, cue_wav, encode_mp3, encode_wav, mp3_settings,
+};
 pub use gain::{FadeShape, fade_curve};
 pub use kira;
 pub use outputs::{

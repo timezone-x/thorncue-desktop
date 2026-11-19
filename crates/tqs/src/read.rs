@@ -52,6 +52,14 @@ pub fn read_package_of(
 ) -> Result<(Manifest, Vec<Warning>)> {
     let file = File::open(path).map_err(TqsError::io("open", path))?;
     let mut zip = zipcheck::open(BufReader::new(file))?;
+    // An audio export (FORMAT.md 7.5) handed to a reader of packages, by a renamed file.
+    if crate::audio_export::is_audio_export(&zip) {
+        return Err(TqsError::invalid(if accept.contains(&Kind::Show) {
+            crate::audio_export::AUDIO_EXPORT_REFUSED
+        } else {
+            crate::audio_export::AUDIO_EXPORT_FOR_CUES
+        }));
+    }
     let (entries, mut warnings) = zipcheck::check(&mut zip, &limits, Layout::Package)?;
     let by_name: HashMap<&str, &zipcheck::Entry> =
         entries.iter().map(|e| (e.name.as_str(), e)).collect();
@@ -190,13 +198,21 @@ pub(crate) fn move_into_place(tmp: tempfile::TempDir, dest_dir: &Path) -> Result
     std::fs::rename(tmp.path(), dest_dir).map_err(TqsError::io("move the show into", dest_dir))?;
     // The folder now lives at dest_dir; don't let TempDir delete it.
     let _ = tmp.keep();
+    sync_parent(dest_dir);
+    Ok(())
+}
+
+/// Make a rename into `path`'s folder durable. Best effort: not every platform can open a
+/// directory.
+pub(crate) fn sync_parent(path: &Path) {
     #[cfg(unix)]
-    if let Some(parent) = dest_dir.parent()
+    if let Some(parent) = path.parent()
         && let Ok(d) = File::open(parent)
     {
         let _ = d.sync_all();
     }
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// What kind of file the user handed us, from its zip listing alone.
@@ -206,12 +222,19 @@ pub enum PackageKind {
     Show,
     /// ThornCue Web's old Export ZIP (has `show.json` at the root or one folder down).
     LegacyWebExport,
+    /// An audio export (FORMAT.md 7.5): not a show; import the `.tqs` inside, if any, with
+    /// `extract_audio_export_tqs`.
+    AudioExport,
 }
 
 /// Look at the zip's file names (nothing is extracted) to decide how to import it.
 pub fn detect_kind(path: &Path) -> Result<PackageKind> {
     let file = File::open(path).map_err(TqsError::io("open", path))?;
     let zip = zipcheck::open(BufReader::new(file))?;
+    // Before the legacy test (7.5): an audio export may have a group folder called show.json.
+    if crate::audio_export::is_audio_export(&zip) {
+        return Ok(PackageKind::AudioExport);
+    }
     let mut legacy = false;
     for name in zip.file_names() {
         let Ok(name) = name else { continue };

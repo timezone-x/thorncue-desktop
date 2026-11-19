@@ -1,0 +1,23 @@
+[
+  {
+    "file": "with-tqs.zip",
+    "expect": "import-inner-tqs",
+    "inner": "Minimal.tqs",
+    "about": "Audio export with Include the .tqs ticked: import the .tqs inside (same result as valid/01-minimal.tqs) and say it was an audio export."
+  },
+  {
+    "file": "without-tqs.zip",
+    "expect": "reject-audio-export",
+    "about": "No .tqs inside: refuse with the 7.5 message."
+  },
+  {
+    "file": "rezipped-no-comment.zip",
+    "expect": "reject-audio-export",
+    "about": "Re-zipped by hand, so the comment is gone: still recognised by its top-level cue-list.csv."
+  },
+  {
+    "file": "group-folders.zip",
+    "expect": "reject-audio-export",
+    "about": "A group folder that happens to be called show.json: the comment makes it an audio export, never a legacy Export ZIP (section 5)."
+  }
+]

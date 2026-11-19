@@ -6,10 +6,12 @@
   import { listen } from "@tauri-apps/api/event";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import {
+    AUDIO_DEFAULTS,
     AUDIO_EXTENSIONS,
     PIECE_EXTENSIONS,
     editApi,
     errorText,
+    exportApi,
     transport,
     type Cue,
     type CuePatch,
@@ -22,12 +24,14 @@
   import { GROUP_COLORS, safeColor } from "../lib/groups";
   import GroupDialog from "../components/GroupDialog.svelte";
   import { act, engine, startEngineMirror } from "../lib/engine.svelte";
-  import { fmtBytes, fmtTime, plural, rowNotes } from "../lib/format";
+  import { cueNumber, fmtBytes, fmtTime, plural, rowNotes } from "../lib/format";
   import { showToast } from "../lib/toast.svelte";
   import { syncValue } from "../lib/sync";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import OutputsBar from "../components/OutputsBar.svelte";
   import Inspector from "../components/Inspector.svelte";
+  import AudioExportDialog from "../components/AudioExportDialog.svelte";
+  import { audioJob, progressText, runAudioExport } from "../lib/audioExport.svelte";
 
   let {
     show,
@@ -126,9 +130,9 @@
       // The most recently started cue in the group, as the now-playing strip.
       const started = engine.positions.filter((p) => !p.audition && rows.includes(p.index));
       const i = started[started.length - 1]?.index ?? runningRows[runningRows.length - 1];
-      parts.push(`Playing Q${i + 1}`);
+      parts.push(`Playing ${cueNumber(i)}`);
     } else if (rows.includes(standby) && collapsed.has(g.id)) {
-      parts.push(`Standby Q${standby + 1}`);
+      parts.push(`Standby ${cueNumber(standby)}`);
     }
     parts.push(playedN || runningRows.length ? `${playedN} of ${n} played` : plural(n, "cue"));
     return parts.join(" · ");
@@ -201,8 +205,8 @@
     const last = cueIndex(ids[ids.length - 1]) + 1;
     const hint =
       ids.length === 1
-        ? `Groups Q${first}. Drag more cues into the group, or shift-click to select a range first.`
-        : `Groups Q${first} to Q${last} (${ids.length} cues).`;
+        ? `Groups ${cueNumber(first - 1)}. Drag more cues into the group, or shift-click to select a range first.`
+        : `Groups ${cueNumber(first - 1)} to ${cueNumber(last - 1)} (${ids.length} cues).`;
     groupDialog = { mode: "new", ids, name: `Group ${n}`, color, hint };
   }
 
@@ -270,7 +274,7 @@
       const added = r.show.cues.length - before;
       // One toast, so a later "Added" never hides which files failed.
       if (r.problems.length) showToast(`Added ${added} of ${audio.length}. Couldn't add: ${r.problems.join(" ")}`, true);
-      else showToast(added === 1 ? `Added Q${r.show.cues.length} "${r.show.cues[r.show.cues.length - 1].name}".` : `Added ${added} cues.`);
+      else showToast(added === 1 ? `Added ${cueNumber(r.show.cues.length - 1)} "${r.show.cues[r.show.cues.length - 1].name}".` : `Added ${added} cues.`);
     } catch (e) {
       showToast(errorText(e), true);
     } finally {
@@ -488,21 +492,39 @@
     }
   }
 
-  /** Export WAV: one cue's audio as it plays (web inspector "Export WAV"). */
-  async function exportWav(id: string) {
+  /** Export ▾ (thorncue-spec#17): .tqc as before; WAV/MP3 for one cue, or for a range a zip with
+   * the Export audio dialog's defaults, without opening it (web exportAs). */
+  async function exportAs(kind: "tqc" | "wav" | "mp3") {
+    const ids = exportIds;
+    if (!ids.length) return;
+    if (kind === "tqc") return exportPiece({ ids });
     try {
-      const name = await editApi.cueWavFileName(id);
-      const path = await saveDialog({ title: "Export WAV", defaultPath: name, filters: [{ name: "WAV audio", extensions: ["wav"] }] });
+      if (ids.length > 1) {
+        showToast(`Exporting ${plural(ids.length, "cue")} as ${kind.toUpperCase()}…`);
+        const r = await runAudioExport(null, { ...AUDIO_DEFAULTS, cues: { kind: "selected", value: ids }, format: kind });
+        if (r && r !== "cancelled") showToast(`Exported ${plural(r.files, "file")} to ${r.file_name}.`);
+        return;
+      }
+      const name = await exportApi.cueFileName(ids[0], kind);
+      const path = await saveDialog({ title: `Export ${kind.toUpperCase()}`, defaultPath: name, filters: [{ name: `${kind.toUpperCase()} audio`, extensions: [kind] }] });
       if (!path) return;
-      await editApi.exportCueWav(id, path);
+      singleExport = "Exporting…";
+      await exportApi.exportCue(ids[0], kind, path);
       showToast(`Exported to ${path.split(/[\\/]/).pop()}.`);
     } catch (e) {
       showToast(errorText(e), true);
+    } finally {
+      singleExport = "";
     }
   }
 
   /** As the web's exportCueIds: the shift-selected range, else the inspected cue. */
   const exportIds = $derived(selected.size > 1 ? cues.filter((c) => selected.has(c.id)).map((c) => c.id) : inspected ? [inspected.id] : []);
+  // ---- Export audio… (the show's cues as a zip) ----
+  let audioDialog = $state(false);
+  let singleExport = $state("");
+  const exportBusy = $derived(singleExport || (audioJob.running ? progressText(audioJob.progress) : ""));
+  const exportAudioCount = $derived(exportIds.filter((id) => { const c = cues.find((x) => x.id === id); return c?.type === "audio" && !!c.asset; }).length);
 
   // Keep the standby row in view, instantly (DESIGN.md: no smooth scroll during a show).
   $effect(() => {
@@ -518,7 +540,7 @@
   // ---- Transport text ----
 
   const standbyName = $derived(
-    cues[standby] ? `Q${standby + 1} ${cues[standby].name}` : cues.length ? "End of cue list" : "No cues",
+    cues[standby] ? `${cueNumber(standby)} ${cues[standby].name}` : cues.length ? "End of cue list" : "No cues",
   );
 
   const status = $derived.by((): { text: string; kind: "" | "running" | "paused" | "error" } => {
@@ -548,12 +570,12 @@
     const p = audio[audio.length - 1] ?? cuesOnly[cuesOnly.length - 1];
     if (!p) {
       const r = snap?.running[snap.running.length - 1];
-      if (r) return { name: `Q${r.index + 1} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
+      if (r) return { name: `${cueNumber(r.index)} ${cues[r.index]?.name ?? ""}`, times: r.phase === "starting" ? "Loading audio…" : "", fraction: 0 };
       return null;
     }
     const phase = snap?.running.find((r) => r.index === p.index)?.phase ?? "running";
     const cue = cues[p.index];
-    const name = `Q${p.index + 1} ${cue?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
+    const name = `${cueNumber(p.index)} ${cue?.name ?? ""}${phase === "fading" ? " (fading out)" : ""}`;
     let times: string;
     if (phase === "waiting") times = `Waiting (pre-wait ${cue?.pre_wait ?? 0} s)`;
     else if (p.control) times = `${fmtTime(p.remaining ?? 0, true)} left`;
@@ -631,7 +653,7 @@
     e.preventDefault();
     const n = jumpValue ?? NaN;
     if (!Number.isInteger(n) || n < 1 || n > cues.length) {
-      jumpError = `There is no Q${jumpValue ?? "?"}. This show has ${plural(cues.length, "cue")}.`;
+      jumpError = `There is no ${jumpValue == null ? "Q?" : cueNumber(jumpValue - 1)}. This show has ${plural(cues.length, "cue")}.`;
       return;
     }
     jumpDialog.close();
@@ -743,7 +765,10 @@
     <button type="button" class="btn" aria-controls="inspector" aria-pressed={!inspectorHidden} aria-keyshortcuts={"\\"}
       title={inspectorHidden ? "Show inspector (\\)" : "Hide inspector (\\)"} onclick={() => inspector?.toggle()}>Inspector</button>
     <button type="button" class="btn" aria-keyshortcuts="?" onclick={() => shortcutsDialog.showModal()}>Shortcuts</button>
-    <button type="button" class="btn" onclick={exportShow}>Export .tqs</button>
+    <button type="button" class="btn" onclick={exportShow}
+      title="Save the cue list and its audio as a .tqs file, for ThornCue Web or another computer">Export .tqs</button>
+    <button type="button" class="btn" aria-haspopup="dialog" disabled={audioJob.running} onclick={() => (audioDialog = true)}
+      title="Save the cues as audio files (WAV, MP3 or the originals) in a zip">{audioJob.running ? progressText(audioJob.progress) : "Export audio…"}</button>
     <button type="button" class="btn" onclick={duplicateShow}>Duplicate show</button>
   </header>
 
@@ -876,10 +901,15 @@
 
   <Inspector bind:this={inspector} bind:hidden={inspectorHidden} showId={show.id} cue={inspected} index={inspectedIndex} {groups} onEdit={updateCue}
     onSetGroup={(id, group) => edit(() => editApi.setCueGroup(id, group))}
-    exportCount={exportIds.length} onExport={() => exportPiece({ ids: exportIds })} onExportWav={exportWav}
+    exportCount={exportIds.length} {exportAudioCount} {exportBusy} onExport={exportAs}
     onDuplicate={(id) => edit(() => editApi.duplicateCue(id))} onReplace={replaceFile}
     onDelete={(cue, index) => (confirmDelete = { cue, index })} />
 </div>
+
+{#if audioDialog}
+  <AudioExportDialog selection={cues.filter((c) => selected.has(c.id)).map((c) => c.id)}
+    currentGroup={inspected?.group ?? null} onClose={() => (audioDialog = false)} />
+{/if}
 
 {#if groupDialog}
   {@const d = groupDialog}
@@ -897,7 +927,7 @@
   {@const d = confirmDelete}
   <ConfirmDialog
     title="Delete this cue?"
-    message={`Q${d.index + 1} "${d.cue.name}" will be removed from the show.`}
+    message={`${cueNumber(d.index)} "${d.cue.name}" will be removed from the show.`}
     confirmLabel="Delete cue"
     danger
     onConfirm={doDelete}

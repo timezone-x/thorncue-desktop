@@ -431,7 +431,10 @@ impl<B: EngineBackend, A: EngineBackend> Core<B, A> {
             .get(index)
             .map(|c| c.name.as_str())
             .unwrap_or("");
-        format!("Q{} \"{name}\"", index + 1)
+        format!(
+            "{} \"{name}\"",
+            tqs::cue_number(index, self.plan.cues.len(), false)
+        )
     }
 
     fn clock_now(&self) -> Option<ClockTime> {
@@ -468,8 +471,8 @@ impl<B: EngineBackend, A: EngineBackend> Core<B, A> {
                     let n = self.plan.cues.len();
                     self.notice(
                         format!(
-                            "There is no Q{}. This show has {n} cue{}.",
-                            i + 1,
+                            "There is no {}. This show has {n} cue{}.",
+                            tqs::cue_number(i, n, false),
                             if n == 1 { "" } else { "s" }
                         ),
                         true,

@@ -1,0 +1,36 @@
+[
+  {
+    "name": "01-trim-cuts-fades-150",
+    "about": "Trim 0.25-2.75, cuts 0.8-1.0 and 1.6-1.75 (two 4 ms joins), fade in 0.3, fade out 0.5, volume 150% on a 0.8 sine, so the loudest part clips at full scale. Edited length 2.15 s.",
+    "source": "tone-f349-loud.wav",
+    "cue": {
+      "id": "r1",
+      "type": "audio",
+      "name": "Storm swell",
+      "asset": "tone-f349-loud",
+      "volume": 1.5,
+      "fade_in": 0.3,
+      "fade_out": 0.5,
+      "pre_wait": 0.0,
+      "duration": 0.0,
+      "loop": false,
+      "continue": "none",
+      "trim_start": 0.25,
+      "trim_end": 2.75,
+      "cuts": [
+        [
+          0.8,
+          1.0
+        ],
+        [
+          1.6,
+          1.75
+        ]
+      ]
+    },
+    "expected": "expected-01.wav",
+    "sha256": "9818a1e175c713923bf8d9d3e89d4492f29bd4f8632d1e94f44c95d6ffdc7e00",
+    "tolerance": 1,
+    "tolerance_about": "Largest allowed difference per sample, in 16-bit steps, for renderers that work in floating point (FORMAT.md 7.2). Header and length must match exactly."
+  }
+]

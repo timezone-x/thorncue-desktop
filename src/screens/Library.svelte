@@ -7,11 +7,15 @@
   import { importFiles, initImporter } from "../lib/importer.svelte";
   import { showToast } from "../lib/toast.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import AudioExportDialog from "../components/AudioExportDialog.svelte";
+  import { audioJob } from "../lib/audioExport.svelte";
 
   let { onOpen, onWeb }: { onOpen: (id: string) => void; onWeb: () => void } = $props();
 
   let shows = $state<ShowSummary[] | null>(null);
   let confirmDelete = $state<ShowSummary | null>(null);
+  /** The show whose Export audio… dialog is open (thorncue-spec#17). */
+  let audioFor = $state<string | null>(null);
   /** The first-run welcome card (thorncue-web templates/new_shows_list.html). */
   let welcome = $state(false);
   let openingSample = $state(false);
@@ -167,6 +171,8 @@
                 <button type="button" class="btn btn--small btn--primary" onclick={() => onOpen(s.id)}>Open</button>
                 <button type="button" class="btn btn--small" onclick={() => duplicate(s)}>Duplicate</button>
                 <button type="button" class="btn btn--small" onclick={() => exportShow(s)}>Export .tqs</button>
+                <button type="button" class="btn btn--small" aria-haspopup="dialog" disabled={audioJob.running}
+                  title="Save the cues as audio files (WAV, MP3 or the originals) in a zip" onclick={() => (audioFor = s.id)}>Export audio…</button>
                 <button type="button" class="btn btn--small btn--danger" onclick={() => (confirmDelete = s)}>Delete</button>
               </td>
             </tr>
@@ -176,6 +182,10 @@
     </div>
   {/if}
 </main>
+
+{#if audioFor}
+  <AudioExportDialog show={audioFor} onClose={() => (audioFor = null)} />
+{/if}
 
 {#if confirmDelete}
   {@const s = confirmDelete}
