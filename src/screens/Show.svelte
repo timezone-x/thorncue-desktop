@@ -36,12 +36,10 @@
 
   let {
     show,
-    onClose,
     onChanged,
     onOpenShow,
   }: {
     show: ShowView;
-    onClose: () => void;
     onChanged: (v: ShowView) => void;
     onOpenShow: (id: string) => void;
   } = $props();
@@ -764,7 +762,6 @@
 
 <div class="page-show">
   <header class="show-head">
-    <button type="button" class="btn" onclick={onClose}>Library</button>
     <label for="show-name" class="sr-only">Show name</label>
     <input type="text" id="show-name" class="show-head__name" maxlength="100" autocomplete="off" use:syncValue={show.name}
       oninput={(e) => renameShow(e.currentTarget.value)} />

@@ -123,6 +123,8 @@ One menu component per app, the same as the inspector's Export ▾ (web `static/
 
 ### In this app
 Copied from thorncue-spec `design/DESIGN.md` "Header and menus" above; the rest is desktop-only.
+- The site nav (ThornCue · Library · ThornCue Web · Settings) is on the Show screen too, so the app has one top bar everywhere. It replaces the header's Library button, so the show header is `[show name] · Master · memory readout · save state ··· [Shortcuts] [Show ▾]`.
+- Leaving the Show screen by the nav closes the show, which stops it. While any cue is playing it asks first ("Leave the show?" / "Stop and leave"), so a stray click on Settings mid-show never stops the show silently. Escape in that dialog is still Stop all.
 - The one menu component is `src/components/Menu.svelte`. Items are activated on keydown because the Show screen cancels Space's keyup (so GO never clicks a focused button).
 
 ## Signature
@@ -150,4 +152,4 @@ None. It's a work tool.
 | 2026-11-10 | ThornCue | `#161616` neutral | go green + OS-selection blue | system UI | transport / list / inspector | none (lands on the cue list) |
 | 2026-11-11 | ThornCue themes | four families × dark/light; Graphite dark default | go green fixed; select hue per family | system UI | unchanged | none |
 | 2026-11-12 | ThornCue desktop | unchanged | unchanged | system UI | Library home + show page as the web | none |
-| 2026-11-21 | ThornCue header tidy | unchanged | unchanged | system UI | show actions into Show ▾, Library rows Open + More ▾ | none |
+| 2026-11-21 | ThornCue header tidy | unchanged | unchanged | system UI | show actions into Show ▾, Library rows Open + More ▾, site nav on every screen | none |

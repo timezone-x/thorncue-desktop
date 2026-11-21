@@ -279,7 +279,7 @@ kbd {
 .page-show {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: calc(100dvh - 40px); /* under the site nav */
   overflow: hidden;
 }
 

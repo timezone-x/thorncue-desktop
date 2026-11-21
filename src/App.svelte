@@ -2,7 +2,9 @@
   import { onMount } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { api, errorText, isTauri, transport, type ShowView } from "./lib/api";
-  import { startEngineMirror } from "./lib/engine.svelte";
+  import { engine, startEngineMirror } from "./lib/engine.svelte";
+  import { plural } from "./lib/format";
+  import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import { importFiles } from "./lib/importer.svelte";
   import { loadTheme } from "./lib/theme.svelte";
   import { toast, showToast } from "./lib/toast.svelte";
@@ -37,7 +39,24 @@
     screen = "library";
   }
 
-  function go(to: Screen) {
+  type Place = Exclude<Screen, "show">;
+  /** Where the nav was asked to go from the Show screen while cues were playing. */
+  let leaveTo = $state<Place | null>(null);
+  const runningCount = $derived(engine.snap?.running.length ?? 0);
+
+  async function go(to: Place) {
+    if (screen !== "show") {
+      screen = to;
+      return;
+    }
+    // From the Show screen the nav closes the show, which stops it. A stray click on Settings
+    // mid-show mustn't do that silently, so ask while anything is playing.
+    if (runningCount > 0 && leaveTo === null) {
+      leaveTo = to;
+      return;
+    }
+    leaveTo = null;
+    await closeShow();
     screen = to;
   }
 
@@ -91,25 +110,34 @@
   });
 </script>
 
+<nav class="site-nav" aria-label="Main">
+  <span class="site-nav__brand">ThornCue</span>
+  <a href="#library" aria-current={screen === "library" ? "page" : undefined}
+    onclick={(e) => { e.preventDefault(); void go("library"); }}>Library</a>
+  <a href="#web" aria-current={screen === "web" ? "page" : undefined}
+    onclick={(e) => { e.preventDefault(); void go("web"); }}>ThornCue Web</a>
+  <a href="#settings" aria-current={screen === "settings" ? "page" : undefined}
+    onclick={(e) => { e.preventDefault(); void go("settings"); }}>Settings</a>
+</nav>
 {#if screen === "show" && show}
-  <Show bind:this={showScreen} {show} onClose={closeShow} onChanged={(v) => (show = v)} onOpenShow={openShow} />
+  <Show bind:this={showScreen} {show} onChanged={(v) => (show = v)} onOpenShow={openShow} />
+{:else if screen === "library"}
+  <Library onOpen={openShow} onWeb={() => go("web")} />
+{:else if screen === "web"}
+  <WebShows onOpen={openShow} onSettings={() => go("settings")} />
 {:else}
-  <nav class="site-nav" aria-label="Main">
-    <span class="site-nav__brand">ThornCue</span>
-    <a href="#library" aria-current={screen === "library" ? "page" : undefined}
-      onclick={(e) => { e.preventDefault(); go("library"); }}>Library</a>
-    <a href="#web" aria-current={screen === "web" ? "page" : undefined}
-      onclick={(e) => { e.preventDefault(); go("web"); }}>ThornCue Web</a>
-    <a href="#settings" aria-current={screen === "settings" ? "page" : undefined}
-      onclick={(e) => { e.preventDefault(); go("settings"); }}>Settings</a>
-  </nav>
-  {#if screen === "library"}
-    <Library onOpen={openShow} onWeb={() => go("web")} />
-  {:else if screen === "web"}
-    <WebShows onOpen={openShow} onSettings={() => go("settings")} />
-  {:else}
-    <Settings onOpen={openShow} />
-  {/if}
+  <Settings onOpen={openShow} />
+{/if}
+
+{#if leaveTo}
+  <ConfirmDialog
+    title="Leave the show?"
+    message={`Leaving closes the show, which stops the ${plural(runningCount, "cue")} playing.`}
+    confirmLabel="Stop and leave"
+    danger
+    onConfirm={() => leaveTo && go(leaveTo)}
+    onCancel={() => (leaveTo = null)}
+  />
 {/if}
 
 <ImportDialog onOpen={openShow} />
