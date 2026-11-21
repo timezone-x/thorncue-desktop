@@ -93,10 +93,10 @@ The header rows had grown to 14 buttons above the transport. In a dim booth that
 - Opens on hover *and* on click/keyboard. Hover only where `(hover: hover) and (pointer: fine)`; it closes 300 ms after the pointer leaves both the button and the list, so moving diagonally into it doesn't drop it. Clicking the name toggles the menu (it doesn't navigate), so it works on a tablet and with a keyboard. Hover-only would fail both.
 - `aria-current` moves to the user button when on Settings or Admin.
 - Signed-out nav and share-link viewers are unchanged.
-- Desktop has no accounts, so no user menu. Its nav (Library · ThornCue Web · Settings) stays.
+- Desktop has no accounts, so no user menu. Its nav (Library · ThornCue Web · Settings) stays, on every screen including the show page (2026-11-21). On the show page it is the way back to the Library, so the desktop show header has no Library button; leaving by it while cues play asks first, because closing a show stops it.
 
 ### Show header (both apps)
-`[Library (desktop)] [show name] · Master ──── 100% · save state ··········· [Shortcuts] [Show ▾]`
+`[show name] · Master ──── 100% · save state ··········· [Shortcuts] [Show ▾]`
 - **Show ▾** holds show management, in this order:
   - Web: Export .tqs · Export audio… · ─ · Duplicate show… · Share…
   - Desktop: Export .tqs… · Export audio… · ─ · Duplicate show
