@@ -30,17 +30,16 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import OutputsBar from "../components/OutputsBar.svelte";
   import Inspector from "../components/Inspector.svelte";
+  import Menu, { type MenuEntry } from "../components/Menu.svelte";
   import AudioExportDialog from "../components/AudioExportDialog.svelte";
   import { audioJob, progressText, runAudioExport } from "../lib/audioExport.svelte";
 
   let {
     show,
-    onClose,
     onChanged,
     onOpenShow,
   }: {
     show: ShowView;
-    onClose: () => void;
     onChanged: (v: ShowView) => void;
     onOpenShow: (id: string) => void;
   } = $props();
@@ -324,6 +323,21 @@
       showToast(errorText(e), true);
     }
   }
+
+  // Show ▾ (DESIGN.md "Header and menus"): once-per-show actions, out of the way of GO.
+  const showItems = $derived<MenuEntry[]>([
+    ...(show.source ? [{ info: "From ThornCue Web:", code: show.source.code }] : []),
+    { label: "Export .tqs…", title: "Save the cue list and its audio as a .tqs file, for ThornCue Web or another computer", onSelect: exportShow, dialog: true },
+    {
+      label: "Export audio…",
+      title: "Save the cues as audio files (WAV, MP3 or the originals) in a zip",
+      disabled: audioJob.running ? "Already exporting" : undefined,
+      onSelect: () => (audioDialog = true),
+      dialog: true,
+    },
+    { separator: true },
+    { label: "Duplicate show", onSelect: duplicateShow },
+  ]);
 
   // ---- Dragging (web app.js "Dragging", on pointer events: HTML5 drag-and-drop is unavailable
   // in the webview on Windows while native file drops are on). A cue by its grip; a whole group
@@ -748,11 +762,9 @@
 
 <div class="page-show">
   <header class="show-head">
-    <button type="button" class="btn" onclick={onClose}>Library</button>
     <label for="show-name" class="sr-only">Show name</label>
     <input type="text" id="show-name" class="show-head__name" maxlength="100" autocomplete="off" use:syncValue={show.name}
       oninput={(e) => renameShow(e.currentTarget.value)} />
-    {#if show.source}<span class="btn show-head__code" title="ThornCue Web show code">{show.source.code}</span>{/if}
     <label class="master" for="master-vol">Master
       <input type="range" id="master-vol" min="0" max="1" step="0.01" value={snap?.master ?? 1}
         oninput={(e) => setMaster(Number(e.currentTarget.value))} />
@@ -762,14 +774,9 @@
     <span class="save-state" class:status-error={saveState === "error"} aria-live="polite" title={saveMessage}>
       {#if saveState === "unsaved"}Saving…{:else if saveState === "error"}Couldn't save{/if}
     </span>
-    <button type="button" class="btn" aria-controls="inspector" aria-pressed={!inspectorHidden} aria-keyshortcuts={"\\"}
-      title={inspectorHidden ? "Show inspector (\\)" : "Hide inspector (\\)"} onclick={() => inspector?.toggle()}>Inspector</button>
     <button type="button" class="btn" aria-keyshortcuts="?" onclick={() => shortcutsDialog.showModal()}>Shortcuts</button>
-    <button type="button" class="btn" onclick={exportShow}
-      title="Save the cue list and its audio as a .tqs file, for ThornCue Web or another computer">Export .tqs</button>
-    <button type="button" class="btn" aria-haspopup="dialog" disabled={audioJob.running} onclick={() => (audioDialog = true)}
-      title="Save the cues as audio files (WAV, MP3 or the originals) in a zip">{audioJob.running ? progressText(audioJob.progress) : "Export audio…"}</button>
-    <button type="button" class="btn" onclick={duplicateShow}>Duplicate show</button>
+    {#if audioJob.running}<span class="muted num show-head__progress" aria-live="polite">{progressText(audioJob.progress)}</span>{/if}
+    <Menu id="show-menu" label="Show" items={showItems} />
   </header>
 
   <OutputsBar />

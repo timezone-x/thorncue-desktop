@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { errorText, type ThemeFamily, type ThemeMode } from "../lib/api";
   import { FAMILIES, setTheme, theme } from "../lib/theme.svelte";
   import { showToast } from "../lib/toast.svelte";
@@ -7,6 +9,12 @@
   import AudioSettings from "../components/AudioSettings.svelte";
   import SampleSettings from "../components/SampleSettings.svelte";
   import WebSettings from "../components/WebSettings.svelte";
+
+  // The installed version (tauri.conf.json, kept equal to Cargo.toml's and package.json's).
+  let version = $state<string | null>(null);
+  onMount(() => {
+    getVersion().then((v) => (version = v), () => (version = null));
+  });
 
   const MODES: { id: ThemeMode; label: string }[] = [
     { id: "dark", label: "Dark" },
@@ -75,4 +83,10 @@
   <SampleSettings {onOpen} />
 
   <WebSettings />
+
+  <section aria-labelledby="about-h">
+    <h2 id="about-h">About</h2>
+    <p>ThornCue <span class="num">{version ?? "(version unknown)"}</span></p>
+    <p class="hint">Free and open-source theatre sound-cue playback. Quote this version when you report a problem.</p>
+  </section>
 </main>

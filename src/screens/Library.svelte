@@ -9,6 +9,7 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import AudioExportDialog from "../components/AudioExportDialog.svelte";
   import { audioJob } from "../lib/audioExport.svelte";
+  import Menu, { type MenuEntry } from "../components/Menu.svelte";
 
   let { onOpen, onWeb }: { onOpen: (id: string) => void; onWeb: () => void } = $props();
 
@@ -110,6 +111,21 @@
     }
   }
 
+  // More ▾ (DESIGN.md "Row actions in show lists"): Open stays a button, the rest go here.
+  const moreItems = (s: ShowSummary): MenuEntry[] => [
+    { label: "Duplicate", onSelect: () => duplicate(s) },
+    { label: "Export .tqs…", title: "Save the cue list and its audio as a .tqs file, for ThornCue Web or another computer", onSelect: () => exportShow(s), dialog: true },
+    {
+      label: "Export audio…",
+      title: "Save the cues as audio files (WAV, MP3 or the originals) in a zip",
+      disabled: audioJob.running ? "Already exporting" : undefined,
+      onSelect: () => (audioFor = s.id),
+      dialog: true,
+    },
+    { separator: true },
+    { label: "Delete…", onSelect: () => (confirmDelete = s), dialog: true },
+  ];
+
   const sourceText = (s: ShowSummary) => (s.source ? `ThornCue Web, ${s.source.code}` : "File");
 </script>
 
@@ -158,7 +174,7 @@
         </thead>
         <tbody>
           {#each shows as s (s.id)}
-            <tr ondblclick={() => onOpen(s.id)}>
+            <tr ondblclick={(e) => { if (!(e.target as HTMLElement).closest("button, .menu__list")) onOpen(s.id); }}>
               <td class="c-name">
                 {s.name}
                 {#if s.damaged}<span class="status-warning"> (recovered from backup)</span>{/if}
@@ -169,11 +185,7 @@
               <td class="date muted">{fmtDate(s.last_opened)}</td>
               <td class="actions">
                 <button type="button" class="btn btn--small btn--primary" onclick={() => onOpen(s.id)}>Open</button>
-                <button type="button" class="btn btn--small" onclick={() => duplicate(s)}>Duplicate</button>
-                <button type="button" class="btn btn--small" onclick={() => exportShow(s)}>Export .tqs</button>
-                <button type="button" class="btn btn--small" aria-haspopup="dialog" disabled={audioJob.running}
-                  title="Save the cues as audio files (WAV, MP3 or the originals) in a zip" onclick={() => (audioFor = s.id)}>Export audio…</button>
-                <button type="button" class="btn btn--small btn--danger" onclick={() => (confirmDelete = s)}>Delete</button>
+                <Menu id={`more-${s.id}`} label="More" small buttonLabel={`More actions for ${s.name}`} items={moreItems(s)} />
               </td>
             </tr>
           {/each}

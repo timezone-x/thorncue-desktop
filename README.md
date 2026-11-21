@@ -14,7 +14,7 @@ The sample show is a short cue list that teaches by its cue names: what to press
 
 ## Export audio
 
-**Export audio…** (in the show header, or on a show's row in the Library) saves a zip of audio files, for a sound designer, a rehearsal recording or another playback system. It isn't a show file: use Export .tqs to move a show. The options (defaults in brackets):
+**Export audio…** (in the **Show ▾** menu at the top of a show, or a show's **More ▾** menu in the Library) saves a zip of audio files, for a sound designer, a rehearsal recording or another playback system. It isn't a show file: use Export .tqs… to move a show. The options (defaults in brackets):
 
 - **Cues:** [All], Selected (when cues are shift-selected), or one group.
 - **Apply edits** [on]: each cue as it plays (trims, cuts, fades, volume; loops once), as [WAV] or MP3 (320 kbps; lower for low sample rates). Off: the original files, byte for byte.

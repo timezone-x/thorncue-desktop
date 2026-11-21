@@ -82,7 +82,50 @@ Status is always a word or glyph plus colour (Running, Paused, Ready), never col
 - `prefers-reduced-motion` disables transitions.
 
 ## Layout (show page)
-Header → transport → now-playing strip (always present, so nothing shifts when a cue starts) → toolbar → cue list → inspector for the selected cue. The inspector starts closed whenever a show opens (as the web), so the cue list has the room for running; open it with the Inspector button or `\`. Its height is remembered.
+Header → transport → now-playing strip (always present, so nothing shifts when a cue starts) → toolbar → cue list → inspector for the selected cue. The inspector starts closed whenever a show opens (as the web), so the cue list has the room for running; open it with the inspector bar's toggle or `\`. Its height is remembered.
+
+## Header and menus
+The header rows had grown to 14 buttons above the transport. In a dim booth that's noise between the operator and GO. Rule: **the header holds what you touch during a show or rehearsal; everything you do once per show goes in a menu.**
+
+### Site nav (web only)
+`ThornCue · My shows · Import · Desktop app` on the left, **`<username> ▾`** on the right. Nothing else.
+- The user menu holds: **Settings**, **Admin** (admins only), a separator, **Sign out**. The separate Settings link and Sign out button go.
+- Opens on hover *and* on click/keyboard. Hover only where `(hover: hover) and (pointer: fine)`; it closes 300 ms after the pointer leaves both the button and the list, so moving diagonally into it doesn't drop it. Clicking the name toggles the menu (it doesn't navigate), so it works on a tablet and with a keyboard. Hover-only would fail both.
+- `aria-current` moves to the user button when on Settings or Admin.
+- Signed-out nav and share-link viewers are unchanged.
+- Desktop has no accounts, so no user menu. Its nav (Library · ThornCue Web · Settings) stays, on every screen including the show page (2026-11-21). On the show page it is the way back to the Library, so the desktop show header has no Library button; leaving by it while cues play asks first, because closing a show stops it.
+
+### Show header (both apps)
+`[show name] · Master ──── 100% · save state ··········· [Shortcuts] [Show ▾]`
+- **Show ▾** holds show management, in this order:
+  - Web: Export .tqs · Export audio… · ─ · Duplicate show… · Share…
+  - Desktop: Export .tqs… · Export audio… · ─ · Duplicate show
+  - Ellipsis means the item opens a dialog (or a save dialog on desktop). Export .tqs on the web is a plain download, so no ellipsis.
+  - Permissions as now: items the user can't use are left out, not disabled (web: non-owners get only the two exports). If nothing is left, the button isn't shown.
+  - While an audio export runs, Export audio… is `aria-disabled` with the tooltip "Already exporting", and the progress text ("Rendering 7 of 24") sits beside the Show button as muted text (desktop; the web shows it in its dialog).
+- **Removed: the show-code button.** Shows aren't opened by typing a code any more; the code is in the URL and the Share dialog. On desktop, the "ThornCue Web show code" label goes too; if the show came from the web, the top of the Show menu shows a non-interactive muted line "From ThornCue Web: `CODE`".
+- **Removed: the header Inspector button.** The inspector bar's own toggle and `\` already do it, and the bar is always visible, hidden or not. (Supersedes the "Inspector button in the header" row in FEATURES.md.)
+- **Kept as buttons:** Master (used mid-show), Shortcuts (people look for it), the save state, desktop's memory readout, and Theme for share-link viewers.
+- Show ▾ opens on **click only**, never hover: it sits a few centimetres above the cue list, and a menu dropping over the cues because the mouse passed by is the last thing you want mid-show.
+
+### Row actions in show lists
+- Desktop Library rows: **Open** stays a button; Duplicate, Export .tqs…, Export audio… and Delete… go in a **More ▾** menu (Delete last, after a separator, still confirmed).
+- Web My shows rows keep their two buttons, renamed "Export .tqs" (it says "Export Show").
+
+### Menu behaviour (every menu, both apps)
+One menu component per app, the same as the inspector's Export ▾ (web `static/app.js` "Export ▾", desktop `Inspector.svelte`). New menus reuse it; the inspector Export ▾ moves onto it too.
+- Button: label + `▾` (`aria-hidden`), `aria-haspopup="menu"`, `aria-expanded`. The caret is the one allowed glyph: it says "this opens".
+- Keys on the button: Enter, Space or ↓ open it and focus the first item. In the list: ↑/↓ wrap, Home/End, Enter/Space activate, Tab closes.
+- **Escape closes the menu and still reaches the page, so Stop all fires.** A menu never swallows Escape. Space and Enter inside a menu never reach GO.
+- Click or tap outside closes it. Only one menu is open at a time. Choosing an item closes it and returns focus to the button (unless the item opened a dialog).
+- The list is aligned to the button's right edge and flips or shifts so it never runs off-screen. Uses `--surface`, `--border-control`, the dialog shadow, 32 px items, sentence case.
+- Disabled items: `aria-disabled="true"` plus a tooltip saying why. Never just greyed out with no reason.
+
+### In this app
+Copied from thorncue-spec `design/DESIGN.md` "Header and menus" above; the rest is desktop-only.
+- The site nav (ThornCue · Library · ThornCue Web · Settings) is on the Show screen too, so the app has one top bar everywhere. It replaces the header's Library button, so the show header is `[show name] · Master · memory readout · save state ··· [Shortcuts] [Show ▾]`.
+- Leaving the Show screen by the nav closes the show, which stops it. While any cue is playing it asks first ("Leave the show?" / "Stop and leave"), so a stray click on Settings mid-show never stops the show silently. Escape in that dialog is still Stop all.
+- The one menu component is `src/components/Menu.svelte`. Items are activated on keydown because the Show screen cancels Space's keyup (so GO never clicks a focused button).
 
 ## Signature
 None. It's a work tool.
@@ -109,3 +152,4 @@ None. It's a work tool.
 | 2026-11-10 | ThornCue | `#161616` neutral | go green + OS-selection blue | system UI | transport / list / inspector | none (lands on the cue list) |
 | 2026-11-11 | ThornCue themes | four families × dark/light; Graphite dark default | go green fixed; select hue per family | system UI | unchanged | none |
 | 2026-11-12 | ThornCue desktop | unchanged | unchanged | system UI | Library home + show page as the web | none |
+| 2026-11-21 | ThornCue header tidy | unchanged | unchanged | system UI | show actions into Show ▾, Library rows Open + More ▾, site nav on every screen | none |

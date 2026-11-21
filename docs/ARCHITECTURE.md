@@ -206,8 +206,8 @@ Port the web's look and behaviour; don't redesign. `reference/web/` has the web'
 
 Screens:
 
-- **Library** (the home screen): a table of local shows (name, cues, size, source, last opened) with Open, New show, Import file…, Import from the web…, Duplicate, Export .tqs, Delete. Drag-and-drop a `.tqs` or legacy `.zip` onto the window to import.
-- **Show:** the web's show page: header, transport (GO, Stop all, Pause, Back to top, standby name, status), now-playing strip, toolbar, cue table, inspector. Plus: an engine status indicator in the transport (Ready / Loading n of m / Device lost / Restarting), and the output device name.
+- **Library** (the home screen): a table of local shows (name, cues, size, source, last opened) with New show, Import file…, Import from the web…, and on each row Open plus More ▾ (Duplicate, Export .tqs…, Export audio…, Delete…). Drag-and-drop a `.tqs` or legacy `.zip` onto the window to import.
+- **Show:** under the same site nav as the other screens (leaving through it closes the show, and asks first while cues play), the web's show page: header (name, Master, save state, Shortcuts, Show ▾), transport (GO, Stop all, Pause, Back to top, standby name, status), now-playing strip, toolbar, cue table, inspector. Plus: an engine status indicator in the transport (Ready / Loading n of m / Device lost / Restarting), and the output device name.
 - **Settings:** theme (family + mode, as the web), audio (output device, buffer size, GO lockout, Stop-all fade), ThornCue Web connection.
 - **Web shows:** as above.
 
