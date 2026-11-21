@@ -171,7 +171,7 @@ label { display: block; margin-bottom: 4px; color: var(--text-muted); }
 .table .num { text-align: right; }
 .table .date { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table .actions { text-align: right; white-space: nowrap; }
-.table .actions .btn + .btn { margin-left: 4px; }
+.table .actions .btn + .btn, .table .actions .menu { margin-left: 4px; }
 .table tbody tr:hover { background: var(--surface); }
 
 /* ---- Dialogs ---- */
@@ -303,7 +303,6 @@ kbd {
 }
 .show-head__name:hover:not(:disabled), .show-head__name:focus { border-color: var(--border-control); background: var(--control); }
 .show-head__name:disabled { opacity: 1; color: var(--text); }
-.show-head__code { font-family: var(--font-code); }
 .master { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-muted); }
 .master input { width: 96px; }
 .master output { min-width: 40px; color: var(--text); }

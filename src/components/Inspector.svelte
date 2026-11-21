@@ -45,7 +45,7 @@
     onExport?: (kind: "tqc" | "wav" | "mp3") => void;
     /** The open show: the inspector closes whenever this changes (a show opened). */
     showId: string;
-    /** Bound by the Show screen for its header Inspector button (thorncue-spec#6). */
+    /** Open or closed; bound by the Show screen. */
     hidden?: boolean;
   } = $props();
 
@@ -77,7 +77,7 @@
     }
   }
 
-  /** The one show/hide: the bar's chevron, the header's Inspector button and `\` all use it. */
+  /** The one show/hide: the bar's chevron and `\` both use it. */
   export function toggle() {
     hidden = !hidden;
     remember();
